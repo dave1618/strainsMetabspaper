@@ -1,0 +1,187 @@
+---
+title: "Malaria_prepdata"
+author: "Nicole Davis"
+date: "12/15/2017"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#use DOs/big screen data/follow-ups for parasitemia / physiology
+#use DOs/follow-ups for survival
+
+#prepare workspace
+```{r}
+library(readxl)
+library(openxlsx)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(reshape2)
+library(cowplot)
+library(survival)
+library(survminer)
+library(circlize)
+theme_set(theme_cowplot(font_size = 10))
+
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+
+#set colors & resilience levels
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ')
+resil <- c('C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ')
+nonresil <- setdiff(resilience_levels, resil)
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+
+maxheight <- 9
+maxwidth <- 6.875
+```
+
+#load data, prep
+```{r}
+sd <- data.frame(read.xlsx('/DatasetS1.xlsx', sheet='sample data'))
+sd$Batch <- 'big screen'
+sd$RBC <- sd$RBC / 2000
+colnames(sd)[colnames(sd) == 'Infected_yn'] <- 'Infected.'
+
+dos_followups <- data.frame(read.xlsx('Dataset S1.xlsx', sheet = 'additional phys data'))
+
+#change infected columns to Infected/Uninfected
+dos_followups$Infected. <- factor(dos_followups$Infected., levels = c("Uninfected","Infected"))
+sd$Infected. <- ifelse(grepl(TRUE, sd$Infected.), "Infected", "Uninfected")
+sd$Infected. <- factor(sd$Infected., levels = c("Uninfected","Infected"))
+
+#remove the pregnant mouse
+dos_followups <- dos_followups[dos_followups$Mouse.ID != 'B78',] #this mouse was pregnant at beginning of infection
+```
+
+#merge the dataframes together
+```{r}
+merge_cols <- c('Batch','Mouse.ID','Strain','Day','Weight','Weight.Percent.Loss','Temperature','Temperature.Delta','RBC','Infected.','Parasitemia','Parasite.Density','Blood.Glucose')
+
+sd2 <- sd[merge_cols]
+sd2$Strain <- factor(sd2$Strain, levels = resilience_levels)
+dos_followups$Strain <- factor(dos_followups$Strain, levels = resilience_levels)
+
+all <- rbind(sd2, dos_followups)
+
+all$Parasitemia <- all$Parasitemia * 100
+all$Parasite.Density <- all$Parasite.Density / 1000000
+all[all$Batch != 'follow up',]$Weight.Percent.Loss <- all[all$Batch != 'follow up',]$Weight.Percent.Loss * 100 #followups experiment data were already transformed
+
+gg <- ggplot(all[all$Strain %in% c('WSB/EiJ','129S1/SvImJ','NZO/HILtJ'),], aes(x=Day, y=Weight.Percent.Loss, color=Strain))
+gg + 
+  geom_line(aes(group=Mouse.ID)) + 
+  #geom_point() + 
+  facet_wrap(~Strain~Batch, scales='free')
+
+gg <- ggplot(all[!(all$Strain %in% c('WSB/EiJ','129S1/SvImJ','NZO/HILtJ')),], aes(x=Day, y=Weight.Percent.Loss, color=Strain))
+gg + 
+  geom_line(aes(group=Mouse.ID)) + 
+  #geom_point() + 
+  facet_wrap(~Strain~Batch, scales='free')
+```
+
+#get means and standard errors
+```{r}
+#get rid of all the day 3, day 4, day 25. d3,d4 were imputed and are not useful. d25 is too late.
+all <- all[!(all$Day %in% c(3:4, 25)),]
+all <- all[all$Strain != 'DO',]
+
+mean_cols <- c('Weight','Weight.Percent.Loss','Temperature','Temperature.Delta','RBC','Parasitemia','Parasite.Density', 'Blood.Glucose')
+
+all_mean <- all %>%
+  group_by(Strain, Day, Infected.) %>%
+  mutate_at(mean_cols, mean, na.rm=TRUE)
+all_mean <- all_mean[c('Batch', 'Strain', 'Day', 'Infected.', mean_cols)] %>% unique()
+
+all_ste <- all %>%
+  group_by(Strain, Day, Infected.) %>%
+  mutate_at(mean_cols, ste, na.rm=TRUE)
+all_ste <- all_ste[c('Batch', 'Strain', 'Day', 'Infected.', mean_cols)] %>% unique()
+
+#add an '.ste' tag to the colnames. written this way, you don't risk changing the order of the columns/mismatching the names; careful if you mess with it
+colnames(all_ste)[colnames(all_ste) %in% mean_cols] <- paste0(colnames(all_ste)[colnames(all_ste) %in% mean_cols], '.ste')
+
+all_mean <- left_join(all_mean, all_ste)
+```
+
+#plot the mean/ste data for parasites and blood glucose
+```{r}
+#subset to just infected, no DOs, up to d15
+all_mean <- all_mean[all_mean$Infected. == 'Infected' & all_mean$Strain != 'DO' & all_mean$Day <= 15,]
+
+gg <- ggplot(all_mean, aes(x=Day, y=Parasitemia, color=Strain))
+parasitemia <- gg + 
+  geom_line(aes(group=interaction(Strain, Infected.)), size=1) +
+  geom_errorbar(aes(ymax = Parasitemia + Parasitemia.ste, ymin = Parasitemia - Parasitemia.ste, width = 0.2)) +
+  #theme(legend.position = 'none') +
+  scale_y_continuous(limits=c(NA, 60), breaks = c(0,10,20,30,40,50,60)) +
+  scale_color_manual(values = redbluePalette) +
+  #geom_line(aes(group=interaction(Strain, Infected.)), size=1, color='steelblue1') +
+  labs(x='DPI', y='Parasitemia (%)')
+parasitemia
+
+gg <- ggplot(all_mean, aes(x=Day, y=Parasite.Density, color=Strain))
+parasite.density <- gg +
+  geom_errorbar(aes(ymax = Parasite.Density + Parasite.Density.ste, ymin = Parasite.Density - Parasite.Density.ste, width = 0.2)) +
+  geom_line(size=1) +
+  scale_color_manual(values = redbluePalette) +
+  scale_y_continuous(limits=c(NA, 2), breaks = c(0,0.5,1,1.5,2)) +
+  #geom_line(aes(group=interaction(Strain, Infected.)), size=1, color='steelblue1') +
+  theme(legend.position = 'none') +
+  labs(x='DPI', y= bquote(10^6~~'parasites /'~mu*'L'))
+parasite.density
+
+gg <- ggplot(all_mean, aes(x=Day, y=Blood.Glucose, color=Strain))
+blood.glucose <- gg +
+  geom_errorbar(aes(ymax = Blood.Glucose + Blood.Glucose.ste, ymin = Blood.Glucose - Blood.Glucose.ste, width = 0.2)) +
+  geom_line(size=1) +
+  scale_color_manual(values = redbluePalette) +
+  theme(legend.position = 'none') +
+  labs(x='DPI', y='Blood Glucose\n(mg/dL)')
+blood.glucose
+```
+
+#plot remaining physiology
+```{r}
+gg <- ggplot(all_mean, aes(x=Day, y=Weight.Percent.Loss, color=Strain))
+weight <- gg + 
+  geom_line(aes(group=interaction(Strain, Infected.)), size=1) +
+  geom_errorbar(aes(ymax = Weight.Percent.Loss + Weight.Percent.Loss.ste, ymin = Weight.Percent.Loss - Weight.Percent.Loss.ste, width = 0.2)) +
+  scale_color_manual(values = redbluePalette) +
+  scale_y_continuous(limits=c(-35,NA), breaks = c(-35, -30, -25, -20, -15, -10, -5, 0, 5)) +
+  #geom_line(aes(group=interaction(Strain, Infected.)), size=1, color='steelblue1') +
+  theme(legend.position = 'none') +
+  labs(x='DPI', y='Weight Loss (%)')
+weight
+
+gg <- ggplot(all_mean, aes(x=Day, y=Temperature.Delta, color=Strain))
+temperature <- gg + 
+  geom_line(aes(group=interaction(Strain, Infected.)), size=1) +
+  geom_errorbar(aes(ymax = Temperature.Delta + Temperature.Delta.ste, ymin = Temperature.Delta - Temperature.Delta.ste, width = 0.2)) +
+  scale_color_manual(values = redbluePalette) +
+  scale_y_continuous(limits = c(-15, NA), breaks = c(-15, -12.5, -10, -7.5, -5, -2.5, 0)) +
+  #geom_line(aes(group=interaction(Strain, Infected.)), size=1, color='steelblue1') +
+  theme(legend.position = 'none') +
+  labs(x='DPI', y='Change in\nTemperature (°C)')
+temperature
+
+gg <- ggplot(all_mean, aes(x=Day, y=RBC, color=Strain))
+rbc <- gg + 
+  theme(legend.position = 'none') +
+  geom_line(aes(group=interaction(Strain, Infected.)), size=1) +
+  scale_y_continuous(limits=c(0, 10), breaks = c(0, 2, 4, 6, 8, 10)) +
+  geom_errorbar(aes(ymax = RBC + RBC.ste, ymin = RBC - RBC.ste, width = 0.2)) +
+  scale_color_manual(values = redbluePalette) +
+  #geom_line(aes(group=interaction(Strain, Infected.)), size=1, color='steelblue1') +
+  labs(x='DPI', y=bquote(10^6~~'RBC /'~mu*'L'))
+rbc
+```
+
