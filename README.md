@@ -5,3 +5,5 @@ data and code to reproduce findings communicated in "Metabolomic analysis of div
 1. input files
 2. code
 3. output files
+
+Note: file directories will need to be edited to match your directories
