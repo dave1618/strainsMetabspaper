@@ -1,0 +1,452 @@
+---
+title: "prettypots_paper"
+author: "Nicole Davis"
+date: "8/31/2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+the point of this script is to take a bunch of ALT and arginase activity data that I've collected over the course of my project, and to compare the relationship of the 2 in WT animals and in some arginase KOs. 
+
+To do this, I import all the ALT and arginase activity from relevant experiments, normalize everything so that the negative control in each experiment (always plasma from a healthy, uninfected mouse) is zero. So this is not an absolute measurement, but I will call it an adjusted absolute.
+
+The point of this is to control for inter-assay variability. There is a lot of that.
+
+In theory, the best way to present these data is to take WT & KO values from the same experiment and compare them, then do that for each WT/KO experiment I did. However, because I did those experiments over a long period of time, the way I processed the samples and did the assays varied too much for me to be able to put everything on one graph. So.... I redid the samples from the 3 experiments of interest: the Arg2 vs. WT, the Arg1-Tek vs. WT, and the Arg1-TBG vs. WT. Unfortunately, some of the ALT values don't compare well from past values, probably due to sample degradation (freeze-thaws and/or age). This may introduce bias, because the 2nd round of ALT didn't work as well as the 1st for some of the WTs in the Arg2 experiment. However, I imported a bunch of other WT data just to show the inter-assay and inter-experiment variability. The fact that the Arg2 KO slope is well within the slopes from other WT experiments suggests that it is not different from WT. It is possible there is a small contribution from Arg2, but there is not enough evidence to conclude that with these data.
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(gdata)
+library(cowplot)
+library(scales)
+library(stringr)
+library(plyr); library(dplyr)
+library(survival)
+library(ggfortify)
+library(survminer)
+library(reshape2)
+library(readxl) ; library(openxlsx)
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+theme_set(theme_cowplot(font_size=10)) # reduce default font size
+
+setwd("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/")
+```
+
+```{r 3/28/18, echo = FALSE, warning = FALSE, message = FALSE, fig.height = 7.3, fig.width = 6.2}
+#ArgTekcross2
+df1 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190817appendedArgTekcross2.xlsx"))
+
+meta1 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190817appendedArgTekcross2.xlsx", sheet = 2))
+
+df1 <- left_join(df1, meta1)
+df1 <- unique(df1) #for some reason, both merge & left_join make duplicate rows ...?
+
+###############long data, Arg2cross1##############
+df2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190429appendedArg2cross1.xlsx"))
+
+meta2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190429appendedArg2cross1.xlsx", sheet = 2))
+
+df2 <- left_join(df2, meta2)
+df2 <- unique(df2) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+
+###############long data, Arg2cross2##############
+df3 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190618appendedArg2cross2.xlsx"))
+
+meta3 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190618appendedArg2cross2.xlsx", sheet = 2))
+
+df3 <- left_join(df3, meta3)
+df3 <- unique(df3) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+###############long data, Arg1liv1##############
+df4 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/191204appendedArg1liv1.xlsx", sheet=1))
+
+meta4 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/191204appendedArg1liv1.xlsx", sheet=2))
+
+df4 <- left_join(df4, meta4)
+df4 <- unique(df4) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+###############long data, PEG1##############
+df5 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/200428appendedPEG1.xlsx", sheet=1))
+
+meta5 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/200428appendedPEG1.xlsx", sheet=2))
+
+df5 <- left_join(df5, meta5)
+df5 <- unique(df5) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+###############long data, pABA1##############
+df6 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190917appendedpABA1.xlsx", sheet=1))
+
+meta6 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190917appendedpABA1.xlsx", sheet = 2))
+
+df6 <- left_join(df6, meta6)
+df6 <- unique(df6) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+###############long data, pABA2##############
+df7 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/191001appendedpABA2.xlsx", sheet=1))
+
+meta7 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/191001appendedpABA2.xlsx", sheet = 2))
+
+df7 <- left_join(df7, meta7)
+df7 <- unique(df7) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+###############long data, Arg1liv2##############
+df8 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/200116appendedArg1liv2.xlsx", sheet=1))
+
+meta8 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/200116appendedArg1liv2.xlsx", sheet = 2))
+
+df8 <- left_join(df8, meta8)
+df8 <- unique(df8) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+date.cols <- colnames(df3)[str_detect(colnames(df3), 'Date') == T]
+nondate.cols <- setdiff(colnames(df3), date.cols)
+
+df1 <- df1[nondate.cols]
+df2 <- df2[nondate.cols]
+df3 <- df3[nondate.cols]
+df4 <- df4[nondate.cols]
+df5 <- df5[nondate.cols]
+df6 <- df6[nondate.cols]
+df7 <- df7[nondate.cols]
+df8 <- df8[nondate.cols]
+
+df.tmp <- rbind(df1, df2) %>% rbind(df3) %>% rbind(df4) %>% rbind(df5) %>% rbind(df6) %>% rbind(df7) %>% rbind(df8)
+df <- df.tmp
+
+unique(df$Experiment)
+exps <- unique(df$Experiment)
+
+df <- df[df$Experiment %in% exps,]
+df <- df[df$Mouse.Strain == 'C57BL/6',]
+
+df$Infected. <- ifelse(grepl(1, df$Infected.), "Infected", "Uninfected")
+df$Infected. <- factor(df$Infected., levels = c("Infected", "Uninfected"))
+
+col6 <- c('red', 'dark red', 'pink', 'blue','black') 
+
+#'red','firebrick3','dark red','orange','green'
+col4 <- c('pink','red','dark red','black')
+col3 <- c("red","blue","black")
+col2 <- c("blue","black")
+col2 <- c("red", "black")
+
+colors <- col6
+
+df$Lived.[df$Lived. == "0.0"] <- 'Died'
+df$Lived.[df$Lived. == "1.0"] <- 'Lived'
+
+alt.data.1 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT_paperBatch1.xlsx'))
+alt.data.1$batch <- 'alt1'
+alt.data.1$notes <- ''
+alt.data.1 <- alt.data.1[c('Well','Time','Abs570','Sample','Mouse.ID','Day','dilution.factor','amt.sample.added','sampletype','replicate','experiment','pyruvate_conc','deltaOD','deltaTime','B','ALT.activity','batch','notes')]
+alt.data.2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT_paperBatch2.xlsx'))
+alt.data.2$batch <- 'alt2'
+alt.data.2$replicate <- ''
+alt.data.2 <- alt.data.2[colnames(alt.data.1)]
+
+alt.data.3 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_Arg1liv1.xlsx'))
+alt.data.3$experiment <- 'Arg1liv1'
+alt.data.3$replicate <- ''
+alt.data.3$notes <- ''
+alt.data.3$batch <- 'alt3'
+alt.data.3 <- alt.data.3[colnames(alt.data.1)]
+alt.data.3 <- rbind(alt.data.3[1,], alt.data.3) #this copies row 1... 
+alt.data.3$Mouse.ID[1] <- 'neg'#turns it into the "negative control"...
+alt.data.3$ALT.activity[1] <- mean(alt.data.3$ALT.activity[alt.data.3$Day == 0], na.rm=T)#and converts the alt activity value to the mean of the uninfected.
+
+alt.data.4 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT_pABA1.xlsx'))
+alt.data.4$experiment <- 'pABA1'
+alt.data.4$replicate <- ''
+alt.data.4$batch <- 'alt4'
+colnames(alt.data.4)[4] <- 'Sample'
+alt.data.4$Mouse.ID[alt.data.4$Mouse.ID == 'negative control (m13)'] <- 'neg'
+alt.data.4 <- alt.data.4[colnames(alt.data.1)]
+
+alt.data.5 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT_pABA2_1.xlsx')
+alt.data.5$experiment <- 'pABA2'
+alt.data.5$replicate <- ''
+alt.data.5$batch <- 'alt5'
+colnames(alt.data.5)[4] <- 'Sample'
+alt.data.5 <- alt.data.5[colnames(alt.data.1)]
+alt.data.5$Mouse.ID[alt.data.5$Mouse.ID == 'negative control (m13)'] <- 'neg'
+
+alt.data.6 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_Arg1liv2.xlsx')
+alt.data.6$experiment <- 'Arg1liv2'
+alt.data.6$replicate <- ''
+alt.data.6$batch <- 'alt6'
+alt.data.6 <- alt.data.6[colnames(alt.data.1)]
+
+alt.data.7 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT_pABA2_2.xlsx')
+alt.data.7$experiment <- 'pABA2'
+alt.data.7$replicate <- ''
+alt.data.7$batch <- 'alt7'
+colnames(alt.data.7)[4] <- 'Sample'
+alt.data.7 <- alt.data.7[colnames(alt.data.1)]
+alt.data.7$Mouse.ID[alt.data.7$Mouse.ID == 'negative control (m13)'] <- 'neg'
+
+arginase.data.1 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch1.xlsx')
+arginase.data.1$batch <- 'argact1'
+arginase.data.2 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch2.xlsx')
+arginase.data.2$experiment <- 'tmp'
+arginase.data.2$batch <- 'argact2'
+arginase.data.2 <- arginase.data.2[colnames(arginase.data.1)]
+arginase.data.3 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch3.xlsx')
+arginase.data.3$batch <- 'argact3'
+arginase.data.4 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch4.xlsx')
+arginase.data.4$Mouse.Genotype <- NULL
+arginase.data.4$batch <- 'argact4'
+
+arginase.data.5 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_Arg1liv1.1.xlsx')
+arginase.data.6 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_Arg1liv1.2.xlsx')
+arginase.data.5$batch <- 'argact5'
+arginase.data.6$batch <- 'argact6'
+arginase.data.5$experiment <- 'Arg1liv1'
+arginase.data.6$experiment <- 'Arg1liv1'
+colnames(arginase.data.5)[2] <- 'Day'
+colnames(arginase.data.6)[2] <- 'Day'
+arginase.data.5 <- arginase.data.5[colnames(arginase.data.1)]
+arginase.data.6 <- arginase.data.6[colnames(arginase.data.1)]
+
+arginase.data.7 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_pABA1.xlsx')
+arginase.data.7$batch <- 'argact7'
+arginase.data.7$experiment <- 'pABA1'
+#ok to treat arg1pilot1.4 as neg control, she's just a normal healthy mouse
+arginase.data.7$Mouse.ID[arginase.data.7$Mouse.ID == 'arg1pilot1.4'] <- 'neg'
+arginase.data.8 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_pABA2_assay1Standards_usethisone.xlsx')
+arginase.data.8$batch <- 'argact8'
+arginase.data.8$experiment <- 'pABA2'
+colnames(arginase.data.7)[2] <- 'Day'
+colnames(arginase.data.8)[2] <- 'Day'
+
+arginase.data.7 <- arginase.data.7[colnames(arginase.data.1)]
+arginase.data.8 <- arginase.data.8[colnames(arginase.data.1)]
+
+arginase.data.9 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_Arg1liv2.xlsx')
+colnames(arginase.data.9)[2] <- 'Day'
+arginase.data.9$batch <- 'argact9'
+arginase.data.9$experiment <- 'Arg1liv2'
+arginase.data.9 <- arginase.data.9[colnames(arginase.data.1)]
+
+arginase.data <- 
+  rbind(arginase.data.1, arginase.data.2) %>% 
+  rbind(arginase.data.3) %>% 
+  rbind(arginase.data.4) %>%
+  rbind(arginase.data.5) %>%
+  rbind(arginase.data.6) %>%
+  rbind(arginase.data.7) %>%
+  rbind(arginase.data.8) %>%
+  rbind(arginase.data.9)
+
+arginase.data <- arginase.data %>%
+  group_by(batch) %>%
+  mutate(ArgActivity.raw = ArgActivity,
+         ArgActivity = ArgActivity - mean(ArgActivity[Mouse.ID %in% c('neg','neg_1.0')]))
+
+alt.data <- rbind(alt.data.1, alt.data.2) %>% rbind(alt.data.3) %>% rbind(alt.data.4) %>% rbind(alt.data.5) %>% rbind(alt.data.6) %>% rbind(alt.data.7)
+
+alt.data <- alt.data %>%
+  group_by(batch) %>%
+  mutate(ALT.activity.raw = ALT.activity,
+         ALT.activity = ALT.activity - mean(ALT.activity[Mouse.ID %in% c('neg','neg.')]))
+
+alt.data <- alt.data[c('Mouse.ID','Day','deltaOD','ALT.activity','batch','experiment')]
+colnames(alt.data) <- c('Mouse.ID','DPI','ALT.OD','ALT.activity','alt.batch','experiment')
+arginase.data <- arginase.data[c('Mouse.ID','Day','deltaOD','ArgActivity','batch','experiment')]
+colnames(arginase.data) <- c('Mouse.ID','DPI','Arg.OD','ArgActivity','arg.batch','experiment')
+
+alt.data$Mouse.ID <- str_replace(alt.data$Mouse.ID, '.prespun', '')
+arginase.data$Mouse.ID <- str_replace(arginase.data$Mouse.ID, '.prespun', '')
+alt.data$experiment[alt.data$experiment == 'lil'] <- 'Liliana'
+alt.data$experiment[alt.data$experiment == 'Tekmay2020'] <- 'Tek_may2020'
+
+alt.data <- alt.data[str_detect(alt.data$Mouse.ID, 'pos') == F,]
+alt.data <- alt.data[str_detect(alt.data$Mouse.ID, 'neg') == F,]
+
+arginase.data <- arginase.data[str_detect(arginase.data$Mouse.ID, 'pos') == F,]
+arginase.data <- arginase.data[str_detect(arginase.data$Mouse.ID, 'neg') == F,]
+
+assay.data <- left_join(alt.data, arginase.data)
+tmp.list <- str_split(assay.data$Mouse.ID, '\\.')
+assay.data$Mouse.num <- lapply(tmp.list, '[[', 2)
+
+assay.data2 <- assay.data %>%
+  group_by(alt.batch) %>%
+  mutate(adj.ALT.activity = ALT.activity - min(ALT.activity, na.rm=T))
+
+assay.data2 <- assay.data2 %>%
+  group_by(arg.batch) %>%
+  mutate(adj.ArgActivity = ArgActivity - min(ArgActivity, na.rm=T))
+```
+
+```{r}
+gg <- ggplot(assay.data2, aes(x=adj.ALT.activity, y = adj.ArgActivity, color=experiment, label=DPI))
+gg + 
+  #geom_text() +
+  geom_point(size=3) +
+  facet_wrap(~experiment) +
+  geom_smooth(method = 'lm', se=F, aes(group=experiment))
+
+df <- left_join(df, assay.data2)
+```
+
+#physiology
+```{r}
+alt <- ggplot(df, aes(x = DPI, y = ALT.activity, group = Mouse.ID, label=Mouse.ID)) +
+  geom_line(aes(group=Mouse.ID)) + 
+  geom_point() +
+  labs(x = "Days post infection", y = "\n ALT") +
+  #scale_colour_manual(values=colors) +
+  facet_wrap(~Treatment, nrow=1) +
+  theme(legend.position="none", legend.title = element_blank())
+
+alt
+
+arginase <- ggplot(df, aes(x = DPI, y = ArgActivity, color = Treatment, group = Mouse.ID, label=Mouse.ID, linetype=Infected.)) +
+  geom_line(aes(group=Mouse.ID)) + 
+  geom_point() +
+  labs(x = "Days post infection", y = "\n deltaOD (Arginase)") +
+  #scale_colour_manual(values=colors) +
+  facet_wrap(~Treatment, nrow=2) +
+  theme(legend.position="none", legend.title = element_blank())
+
+arginase
+
+df$Mouse.num <- df$Mouse.ID
+df$Mouse.num <- str_replace(df$Mouse.num, '190817ArgTekcross2.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '190429Arg2cross1.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '190618Arg2cross2.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '191204Arg1liv1.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '200428PEG1.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '190917pABA1.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '191001pABA2.', '')
+df$Mouse.num <- str_replace(df$Mouse.num, '200116Arg1liv2.', '')
+
+df$Mouse.Genotype[df$Treatment == 'TBG-Cre'] <- 'Arg1 fl/fl ; TBG-cre'
+df$Mouse.Genotype[df$Treatment == 'GFP'] <- 'Arg1 fl/fl ; GFP'
+df$Mouse.Genotype[df$Mouse.Genotype == 'Arg1 flox/flox ; Tek +/+'] <- 'Arg1 fl/fl'
+df$Mouse.Genotype[df$Mouse.Genotype == 'Arg1 flox/flox ; Tek cre/+'] <- 'Arg1 fl/fl ; Tek-cre'
+df$experiment[df$experiment == 'A1liv1'] <- 'Arg1liv1'
+df$Mouse.Genotype.simplified <- df$Mouse.Genotype
+df$Mouse.Genotype.simplified[df$Mouse.Genotype.simplified %in% c('Arg1 fl/fl','Arg1 fl/fl ; GFP')] <- 'WT'
+df$Mouse.Genotype.simplified2 <- df$Mouse.Genotype.simplified
+df$Mouse.Genotype.simplified2[df$Mouse.Genotype.simplified2 != 'WT'] <- 'KO'
+df$experiment[df$experiment %in% c('Arg1liv1','Arg1liv2')] <- 'Arg1liv'
+
+#experiment separates mice into proper cohorts for faceting on gene of interest
+
+#just keep Arg1liv1
+df <- df[df$Experiment != '200116Arg1liv2',]
+
+alt.arginase <- ggplot(df[is.na(df$ALT.activity) == F & df$Mouse.Genotype.simplified2 == 'WT',], aes(x = ALT.activity, y = ArgActivity, group = Mouse.ID, label=Mouse.num)) +
+  geom_point(alpha=0.5, color='gray', size=0.75) +
+  #geom_text() +
+  labs(x = "ALT (U/L)", y = "\n Arginase Activity (U/L)") +
+  geom_smooth(method='lm',se=F, color='gray', size=0.4, aes(group=experiment)) +
+  #scale_colour_manual(values=colors) +
+  geom_smooth(data = df[is.na(df$ALT.activity) == F & df$Mouse.Genotype.simplified2 != 'WT',],
+              method = 'lm', se=F, aes(group=experiment, color=Mouse.Genotype)) +
+  geom_point(data = df[is.na(df$ALT.activity) == F & df$Mouse.Genotype.simplified2 != 'WT',],
+             aes(color=Mouse.Genotype), size=2) +
+  scale_color_manual(values = c('red','darkorange','blue')) +
+  facet_wrap(~experiment) +
+  theme(legend.position="bottom", legend.direction = 'vertical',
+        legend.justification = 'center', legend.title = element_blank())
+
+alt.arginase
+
+#for paper
+df2 <- df[df$experiment %in% c('Arg1liv','ATC2','Arg2cross1and2'),]
+df2$Mouse.Genotype.label <- df2$Mouse.Genotype
+df2$Mouse.Genotype.label[df2$Mouse.Genotype == 'Arg1 fl/fl ; GFP'] <- 'Arg1 fl/fl ; TBG-GFP'
+df2$Mouse.Genotype.label[df2$Mouse.Genotype == 'WT' & df2$experiment == 'Arg2cross1and2'] <- 'Arg2+/+'
+df2$experiment[df2$experiment == 'Arg1liv'] <- 'Arg1 (TBG)'
+df2$experiment[df2$experiment == 'ATC2'] <- 'Arg1 (Tek)'
+df2$experiment[df2$experiment == 'Arg2cross1and2'] <- 'Arg2'
+
+df2$Mouse.Genotype.label <- factor(df2$Mouse.Genotype.label, levels = c('Arg1 fl/fl ; TBG-cre', 'Arg1 fl/fl ; TBG-GFP', 'Arg1 fl/fl ; Tek-cre', 'Arg1 fl/fl', 'Arg2-/-', 'Arg2+/+'))
+
+alt.arginase <- ggplot(df2[is.na(df2$ALT.activity) == F,], aes(x = ALT.activity/1000, y = ArgActivity, color=Mouse.Genotype.label)) +
+  labs(x = "ALT (kU/L)", y = "Arginase Activity") +
+  geom_smooth(method='lm',se=F, size=0.4, aes(group=Mouse.Genotype)) +
+  geom_point(data = df2[is.na(df2$ALT.activity) == F,], size=2) +
+  scale_color_manual(values = c('red','gray','darkorange','gray','blue','gray')) +
+  facet_wrap(~experiment) +
+  guides(color=guide_legend(ncol=3)) +
+  theme(legend.position="bottom", legend.direction = 'vertical',
+        legend.justification = 'center', legend.title = element_blank())
+
+alt.arginase
+
+#gasp it's gorgeous
+
+
+#ggsave('prettyplots_4_arginase_alt_corr.pdf', plot = alt.arginase, units = 'in', width = 3.5, height = 2, useDingbats = F, device = 'pdf')
+```
+
+#metabolic data
+```{r}
+metab.meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/Davis June 2020 - SUMS sample manifest.xlsx', sheet= 'manifest'))
+metab.meta$Sample <- as.character(metab.meta$Sample)
+
+arg <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'ARG'))
+
+#normalize according to Karolina's dilution factors, etc
+arg <- arg[c('Sample.Text','fmol.ul','IS.Area')]
+arg.little <- arg %>%
+  group_by(Sample.Text) %>%
+  transmute(ARG.mean.fM = mean(fmol.ul, na.rm=T),
+            ARG.mean = ARG.mean.fM * 5 / 1000,
+            ARG.IS.mean = mean(IS.Area, na.rm=T)) %>%
+  unique()
+
+metabs.s <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/ArgTekcross2_metabolomics/SUMS/022020_calcurve_samples_KK_results.xlsx', sheet=3)
+colnames(metabs.s)[5:7] <- c('ARG.mean','ORN.mean','CIT.mean')
+
+metab.meta <- merge(metab.meta, arg.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+
+df3 <- left_join(df2, metab.meta)
+df3$Treatment <- factor(df3$Treatment, levels = c('GFP','TBG-Cre low','TBG-Cre med', 'TBG-Cre high'))
+df3$experiment2 <- df3$experiment
+df3$experiment2 <- as.numeric(factor(df3$experiment, levels = c('ATC2','Arg2cross1and2','Arg1liv','PEG1','pABA1','pABA2')))
+
+df3.tek <- df3[df3$Experiment == '190817ArgTekcross2',]
+colnames <- colnames(df3.tek)
+df3.tek$ARG.mean <- NULL; df3.tek$ORN.mean <- NULL; df3.tek$CIT.mean <- NULL
+df3.tek <- merge(df3.tek, metabs.s[c('Mouse.ID','ARG.mean','ORN.mean','CIT.mean')], by.x = 'Mouse.ID', by.y = 'Mouse.ID', all.x = T)
+df3.tek <- df3.tek[colnames]
+df3.tek$Treat <- df3.tek$Mouse.Genotype
+
+df3.nottek <- df3[df3$Experiment != '190817ArgTekcross2',]
+df3 <- rbind(df3.tek, df3.nottek)
+
+df3$color <- df3$Treat
+
+########
+gg <- ggplot(df3[is.na(df3$ARG.mean) == F & is.na(df3$ArgActivity) == F & df3$Experiment != '191204Arg1liv1',], aes(x=ArgActivity, color=Mouse.Genotype.label, y=ARG.mean))
+
+arg.corr <- gg +
+  geom_smooth(color='black', se=T, span=1) +
+  scale_color_manual(values = c('darkorange','blue','gray','black')) +
+  geom_point(size=2) +
+  labs(x= 'Arginase Activity', y='Plasma arginine (uM)', color = 'Genotype') +
+  theme(legend.position = 'right', legend.direction = 'vertical')
+  
+arg.corr
+
+#ggsave('prettyplots_4_arginase_alt_corr_tekArg2.pdf', units = 'in', width = 3.5, height = 2, useDingbats = F, device = 'pdf')
+```
+

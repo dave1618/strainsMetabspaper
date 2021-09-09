@@ -1,0 +1,229 @@
+---
+title: "ArgActivity"
+author: "Nicole Davis"
+date: "11/6/2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#prepare workspace
+```{r, include=FALSE}
+#load needed packages
+library(readxl)
+library(psych)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(openxlsx)
+library(ggrepel)
+library(knitr)
+library(stringr)
+library(cowplot)
+
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy', 'gray')
+
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ', 'DO')
+
+#set working directory
+setwd('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arginase activity assay/')
+
+theme_set(theme_cowplot(font_size=10))
+```
+
+#load and merge data
+```{r}
+aaa <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arginase activity assay/20201101_ArgActivityAssay_strainsleftovers.xlsx', sheet='abs'))
+
+aaa_meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arginase activity assay/20201101_ArgActivityAssay_strainsleftovers.xlsx', sheet='Metadata'))
+
+aaa_meta2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/MouseStrains_x_Metabolites_withliver.xlsx'))
+aaa_meta2 <- unique(aaa_meta2[c('SAMPLE.NUMBER.MASTER','Mouse.ID')])
+
+aaa_meta <- merge(aaa_meta, aaa_meta2, by.x = 'num', 'SAMPLE.NUMBER.MASTER', all.x = T)
+
+aaa <- melt(aaa, id.vars = 'Time', variable.name = 'Well', value.name = 'Abs570')
+
+aaa <- merge(aaa, aaa_meta, by.x = 'Well', by.y = 'Well')
+aaa$Mouse.ID <- ifelse(aaa$sampletype %in% c('standard','control'), yes = aaa$num, no = aaa$Mouse.ID) #since there is only the 'num' column filled out from excel spreadsheet, need to put info for standards and controls into the Mouse.ID column
+```
+
+##wrangle data
+#this chunk adds one extra piece of metadata for the standards samples
+```{r}
+#make metadata data - the concentration of h2o2 in the standards
+h2o2 <- data.frame(Standard = paste0('S',1:6),
+                   h2o2_conc = c(0, 2, 4, 6, 8, 10))
+
+#choose column order and merge
+col_order <- colnames(aaa)
+aaa <- merge(aaa, h2o2, by.x = 'Mouse.ID', by.y = 'Standard', all.x = TRUE)
+aaa <- aaa[c(col_order, 'h2o2_conc')]
+```
+
+##calculate things
+```{r}
+# #get mean of standards and samples (n=1 for samples, so just the value)
+# aaa <- aaa %>%
+#   group_by(Time, Mouse.ID, welltype) %>%
+#   mutate(meanabs = mean(Abs570))
+
+#plot the standards over time so you can decide how to substract the background
+#if the background is constant, great; average all background values and subtract that
+#otherwise, group by time and subtract background from time-matched samples
+gg <- ggplot(aaa[aaa$Mouse.ID == 'S1',], aes(x=Time, y=Abs570))
+gg + geom_point()
+#looks like it'll be only mildly important to group by time, but to be safe, let's do it
+
+bground <- aaa$Abs570[aaa$Mouse.ID=='S1' & aaa$Time == 0][1]
+
+#get corrected value by subtracting background from all samples, controls, standards
+aaa <- aaa %>%
+  mutate(corrected = Abs570 - bground)
+```
+
+#rough plot & background-corrected rough plot
+```{r}
+aaa$row <- str_sub(aaa$Well, 1, 1)
+aaa$column <- str_sub(aaa$Well, 2, 3)
+#get a rough idea of what the samples are doing
+gg <- ggplot(aaa[is.na(aaa$Mouse.ID) == F,], aes(x=Time, y=Abs570, color=Infected., label=Well))
+gg + 
+  geom_point()
+#what you want to see is:
+# 1. horizontal lines for all standards (pretty true)
+# 2. linear increase in pos control w/ max abs at end of assay ~0.6 (this is what I normally get, and what examples plot in manual looks like)
+# 3. samples should be higher than background if you're expecting arginase activity
+# 4. if background absorbance is greater than 1.0, you should dilute the sample again
+# 5. plots should be roughly linear. if not & if max abs is >1, consider diluting
+
+#better plot with background absorption [[that is from the blank]] subtracted
+gg <- ggplot(aaa, aes(x=Time, y=corrected, color=Infected.))
+
+gg + 
+  geom_point() +
+  facet_wrap(~welltype)
+
+#even better plot with background absorption [[that is from the sample]] subtracted
+samples <- aaa[aaa$sampletype != 'standard',]
+samples <- samples %>%
+  group_by(Mouse.ID, Time, Day) %>%
+  mutate(correctedcorrected = corrected[welltype == 'sample'] - corrected[welltype == 'background'])
+
+#note that this does not remove the background points; do that here
+samples <- samples[samples$welltype == 'sample',]
+
+samples <- data.frame(samples)
+
+gg <- ggplot(samples, aes(x=Time, y=correctedcorrected, color=Infected.))
+gg + 
+  geom_point()
+```
+
+##instructions say to plot corrected absorbance values for each standard as a function of the final concentration of arginase
+```{r}
+#if standards look pretty consistent over time, plot their averages
+standards <- aaa[aaa$welltype == 'standard',]
+
+standards_simple <- standards %>%
+  group_by(Mouse.ID) %>%
+  transmute(meanabs = mean(Abs570[Time==0], na.rm = TRUE),
+            h2o2_conc = h2o2_conc)
+
+standards_simple <- unique(standards_simple)
+
+gg <- ggplot(standards_simple, aes(x=h2o2_conc, y=meanabs))
+gg + geom_point(size=3)
+#not bad!
+
+#get equation from standard curve
+x <- standards_simple$h2o2_conc
+y <- standards_simple$meanabs - standards_simple$meanabs[1]
+
+#get curve, extract components
+curve <- lm(y~x)
+summary(curve)
+slope <- curve$coefficients['x']
+intercept <- curve$coefficients['(Intercept)']
+
+#plot to make sure they make sense
+gg <- ggplot(standards_simple, aes(x=h2o2_conc, y=meanabs - meanabs[1]))
+gg + 
+  geom_point(size=3) +
+  geom_abline(slope=slope,
+              intercept=intercept)
+#nice looks good
+
+#now choose your timepoints. replot an earlier plot to choose a timerange over which the points increase in roughly linear fashion
+gg <- ggplot(samples, aes(x=Time, y=correctedcorrected, color=Infected.))
+gg + 
+  geom_line(aes(group=Mouse.ID)) +
+  geom_vline(xintercept = 8) +
+  geom_vline(xintercept = 18) +
+  facet_wrap(~Infected.)
+
+########subset the data to just keep change in OD over that timerange ############
+time1 <- 8
+time2 <- 18
+
+samples_overtime <- samples %>%
+  group_by(Mouse.ID,Day,amt.sample.added) %>% #when using transmute, make sure you add all the columns you want to keep into 'group_by'
+  transmute(deltaOD = correctedcorrected[Time == time2] - correctedcorrected[Time == time1],
+         deltaTime = time2 - time1)
+
+samples_overtime <- unique(samples_overtime)
+
+####################################################################################
+
+#calcuate h2o2 amount created for each of the samples, converting from deltaOD to umol of H2O2 produced using the standard curve values
+#in other words, solve for x values for each sample using deltaOD values as y values
+# x = (y - intercept) / slope
+samples_overtime$h2o2_umol <- (samples_overtime$deltaOD - intercept) / slope
+
+samples_overtime$h2o2permin <- samples_overtime$h2o2_umol / samples_overtime$deltaTime
+
+#this is approximate for now, just to show that there is arginase activity
+samples_overtime$ArgActivity <- samples_overtime$h2o2permin / samples_overtime$amt.sample.added
+
+samples_overtime <- data.frame(samples_overtime)
+```
+
+#plot by treatment
+```{r}
+#add metadata
+smd <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data_raw.xlsx'))
+smd <- smd[c('Mouse.ID','SacDay','Strain','ALT','arginine','ornithine','citrulline')]
+smd$Strain <- factor(smd$Strain, levels = resilience_levels)
+samples_overtime2 <- merge(samples_overtime, smd, by.x = 'Mouse.ID', by.y = 'Mouse.ID', all.x = T)
+
+#no B6 samples, so modify redbluePalette
+redbluePalette_noB6 <- redbluePalette[c(1:4,6:8)]
+
+gg <- ggplot(samples_overtime2[is.na(samples_overtime2$ALT) == F,], aes(x=ALT, y=ArgActivity, color=Strain))
+arginase_ALT <- gg + 
+  #geom_line(size=1) +
+  geom_jitter() +
+  scale_color_manual(values=redbluePalette_noB6) +
+  guides(color=F) +
+  labs(x = 'ALT (U/L)', y= 'Arginase Activity', color = 'Strain')
+arginase_ALT
+
+gg <- ggplot(samples_overtime2[is.na(samples_overtime2$ALT) == F,], aes(x=(ArgActivity), y=arginine, color=Strain))
+arginase_arginine <- gg + 
+  geom_smooth(color='black', span=1) +
+  geom_jitter() +
+  scale_color_manual(values=redbluePalette_noB6) +
+  labs(x = 'Arginase Activity', y= 'Arginine', color = 'Strain')
+arginase_arginine
+
+setwd('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/figures/')
+
+#ggsave(filename = 'prettyplots_4_strains_arginase_vs_arginine.pdf', arginase_arginine, width = 3, device = 'pdf', height = 1.75, units = 'in', useDingbats = F)
+#ggsave(filename = 'prettyplots_4_strains_arginase_vs_ALT.pdf', arginase_ALT, width = 3, device = 'pdf', height = 1.75, units = 'in', useDingbats = F)
+
+#write.xlsx(samples_overtime, '/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch4.xlsx')
+```
+
+Unit Definition:
+1 Unit Arginase activity = amount of arginase that will generate 1.0 umol of H2O2 per minute at pH 8 at 37°C.
