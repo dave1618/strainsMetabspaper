@@ -1,0 +1,298 @@
+---
+title: "StrainsMetabs_SummaryAnalyses"
+author: "Nicole Davis"
+date: "8/3/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(dplyr)
+library(cowplot)
+library(stringr)
+library(openxlsx)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+library(scales)
+
+theme_set(theme_cowplot(font_size = 10))
+setwd('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/figures/')
+
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ') #this is determined based on what proportion of animals survive infection, on average
+resilience_levels_inv <- rev(resilience_levels) #this is determined based on what proportion of animals survive infection, on average. for wsb, nzo, and 129 (100% survival), colors are assigned based on resistance (parasite load), which also corresponds to symptom severity
+
+#strains color palette, see https://csbio.unc.edu/CCstatus/index.py?run=AvailableLines.information & https://rdrr.io/github/rqtl/qtl2/man/CCcolors.html 
+colors8 <- c("#FFDC00", "#888888", "#F08080", "#0064C9", "#7FDBFF", "#2ECC40", "#FF4136", "#B10DC9")
+#a/j, b6, 129, nod, nzo, cast, pwk, wsb
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+redbluePalette_inv <- rev(redbluePalette)
+
+#load metabolite info
+metab_info <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Metabolon/StrainsMetabs_metabolite_info.xlsx')
+
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/BIOCHEMICALS.match.Rdata')
+
+metab_info <- merge(metab_info, BIOCHEMICALS.match, by.x = 'BIOCHEMICAL', by.y = 'BIOCHEMICAL')
+
+smd <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data.xlsx')) #metabolites are z-scored in this
+smd$Strain <- factor(smd$Strain, levels=resilience_levels_inv)
+```
+
+#number of metabolites
+```{r}
+dim(metab_info)[1] #773
+```
+
+#number of samples
+```{r}
+dim(smd)[1] #432 individual mice
+unique(smd$Strain) #8 strains
+
+counts <- smd %>% group_by(SacDay) %>% count(Strain, Infected_yn) #look at that table for detailed info
+```
+
+#list of parameters measured
+```{r}
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/ParametersMeasured.Rdata')
+physcols <- mlist[[1]]
+flowcols <- mlist[[2]]
+livercols <- mlist[[3]]
+cytocols <- mlist[[4]]
+metabcols <- mlist[[5]]
+allcols <- unlist(mlist)
+
+rm(mlist)
+
+idcols <- setdiff(colnames(smd_extremes), allcols)
+idcols <- c('Strain','Infected_yn')
+```
+
+use phyloseq to create R object with sample data, metabolite data, and the metabolite-sample table, for PCA plots. phyloseq is generally used for microbiome (16S) data, but is a convenient way to organize omics data and associated metadata
+```{r}
+library(phyloseq)
+
+#split into metabolite columns and non-metabolite columns
+nonmetabcols <- setdiff(colnames(smd), c(metabcols,cytocols,livercols,'RBC_Accuri','Parasite.Density','Parasitemia','Temperature.Delta','Weight.Percent.Loss'))
+
+##prepare data to become components of phyloseq object: 
+#[1] sample data, 
+#[2] metabolite data, 
+#[3] sample-metabolite or "OTU" table
+rownames(smd) <- smd$SAMPLE.NAME
+
+smd <- smd[is.na(smd$arginine) == FALSE,] #removes samples that lack metabolomics data; all samples w/ any metabolomics data have arginine values
+
+smd_sampdata <- smd[1:109] #this is the sample metadata
+smd_metabs <- smd[110:ncol(smd)] #this is the "OTU" table
+
+#get rid of missing values & bile acids
+lotsofmissings <- metab_info$BIOCHEMICAL.weirdformat[metab_info$percentNA > 0.2]
+lotsofmissings
+bileacids <- metab_info$BIOCHEMICAL.weirdformat[metab_info$SUB.PATHWAY %in% c('Primary Bile Acid Metabolism','Secondary Bile Acid Metabolism')]
+keep <- setdiff(colnames(smd_metabs), c(lotsofmissings, bileacids))
+smd_metabs <- smd_metabs[keep]#remove any metabolites with lots of missing values, remvoe bile acids
+
+#add a pseudocount to the table so there are no negative values 
+metabmin <- min(smd_metabs) #what is the minimum value in the table?
+metabmin
+smd_metabs <- smd_metabs + abs(metabmin) + 1 #minimum is now 1
+
+#order by day & infected, for ease of inspection
+smd_sampdata2 <- smd_sampdata[order(smd_sampdata$Infected_yn, smd_sampdata$SacDay, decreasing = F),]
+rownames(smd_sampdata2)
+smd_metabs <- smd_metabs[order(rownames(smd_sampdata2)),]
+
+#metabolite metadata
+smd_metabdata <- metab_info  
+rownames(smd_metabdata) <- smd_metabdata$BIOCHEMICAL.weirdformat
+
+#construct components of phyloseq object
+OT <- otu_table(as.matrix(smd_metabs), taxa_are_rows = F)
+smd_sampdata$Infected_yn[smd_sampdata$Infected_yn == FALSE] <- 'Uninfected'
+smd_sampdata$Infected_yn[smd_sampdata$Infected_yn == TRUE] <- 'Infected'
+smd_sampdata$Infected_yn <- factor(smd_sampdata$Infected_yn, levels = c('Uninfected','Infected'))
+
+SD <- sample_data(smd_sampdata[c(idcols, 'Day')])
+TT <- tax_table(as.matrix(smd_metabdata))
+
+#construct phyloseq object
+ps.SM <- phyloseq(OT, SD, TT)
+```
+
+#perform and plot pca 
+```{r}
+set.seed(2)
+all <- ordinate(ps.SM, method='PCoA', distance='bray')
+#if at this point you have negative values, you'll need to go back to the Z-score function and change it so that all values are >0
+#if you have missing values, this will also be a problem
+
+theme_set(theme_cowplot(font_size=10))
+
+###### FOR TALK AND PAPER #####
+plot <- plot_ordination(ps.SM, all, color='Strain') +
+  labs(shape = 'Day', color='Strain', x = 'PC1 [31.2%]', y = 'PC2 [11.5%]') +
+  geom_point(size=2, color='white') +
+  geom_text(size=3, aes(label=Day), fontface = "bold") +
+  facet_wrap(~Infected_yn) + 
+  theme(legend.position = 'none') +
+  scale_color_manual(values = redbluePalette_inv)
+
+plot
+##########################
+
+maxwidth <- 6.875
+
+#ggsave('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/figures/prettyplots_2_PCA.pdf', plot, width=maxwidth, height=3, units="in", useDingbats=FALSE)
+```
+
+#make plots derived from PCA
+```{r}
+sd.small <- smd[c('Strain','Day','Infected_yn')]
+
+#extract sample coordinates
+pca.df <- data.frame(all$vectors) #all principal components
+pca.df <- merge(sd.small, pca.df, by.x= 'row.names', by.y = 'row.names')
+pca.df <- pca.df[2:6]
+pca.df$Day[pca.df$Infected_yn == FALSE] <- 0
+pca.df <- pca.df %>%
+  group_by(Strain, Day, Infected_yn) %>%
+  mutate_all(median, na.rm = T) %>%
+  unique()
+
+#plot trajectories, pca
+pca.df <- pca.df[order(pca.df$Day, decreasing = F),]
+gg <- ggplot(pca.df, aes(x=Axis.1, y=Axis.2, color = Strain))
+traj.plot.pca <- gg + 
+  geom_path(size=1, arrow = arrow(type = 'closed', length = unit(0.1, "inches")), lineend = 'round') +
+  labs(x='Axis 1', y='Axis 2') +
+  scale_color_manual(values = redbluePalette_inv) + theme(legend.position = 'right')
+traj.plot.pca
+
+#plot distance from origin, pca
+pca.dist <- pca.df
+colnames(pca.dist)[4:5] <- c('x1','y1')
+pca.dist2 <- pca.dist %>%
+  group_by(Strain) %>%
+  mutate(x1 = x1 - min(x1), #ensures all values are >=0 so the minimum is positive so x.max - x.min works for all values
+         x.day_0 = x1[Day == 0],
+         x.day_max = x1[x1 == max(x1)], #max is maximum distance distance traveled
+         length = x.day_max - x.day_0)
+
+gg <- ggplot(pca.dist2, aes(x=Strain, y=length, color=Strain))
+distance.plot.pca <- gg + 
+  geom_point(size=3) +
+  scale_color_manual(values = redbluePalette_inv) +
+  theme(axis.text.x = element_text(color='white'))
+distance.plot.pca
+
+plot_grid(traj.plot.pca, distance.plot.pca, rel_widths = c(0.7,1))
+```
+
+#repeat for cca, another method
+```{r}
+#cca is an alternative method to PCA; in the absence of strong reasons to use PCA vs. CCA vs. another method, it is generally a good idea to pick one but try a few. if methods generate wildly different results, read about methods to understand why.
+cca.all = ordinate(ps.SM, method="CCA", distance = "bray")
+
+plot <- plot_ordination(ps.SM, cca.all, color='Strain') +
+  #labs(shape = 'Day', color='Strain', x = 'PC1 [31.2%]', y = 'PC2 [11.5%]') +
+  geom_point(size=2, color='white') +
+  geom_text(size=3, aes(label=Day), fontface = "bold") +
+  facet_wrap(~Infected_yn, nrow=2) + 
+  theme(legend.position = 'none') +
+  scale_color_manual(values = redbluePalette_inv)
+
+plot
+
+
+#get points
+cca.df <- data.frame(cca.all$CA$u) #all principal components
+cca.df <- merge(sd.small, cca.df, by.x= 'row.names', by.y = 'row.names')
+
+cca.df <- cca.df[2:6]
+cca.df$Day[cca.df$Infected_yn == FALSE] <- 0
+cca.df <- cca.df %>%
+  group_by(Strain, Day, Infected_yn) %>%
+  mutate_all(median, na.rm = T) %>%
+  unique()
+
+#plot trajectories, cca
+cca.df <- cca.df[order(cca.df$Day, decreasing = F),]
+gg <- ggplot(cca.df, aes(x=CA1, y=CA2, color = Strain))
+traj.plot <- gg + 
+  geom_path(size=1.5, arrow = arrow(type = 'closed', length = unit(0.1, "inches")), lineend = 'round') +
+  scale_color_manual(values = redbluePalette_inv) + theme(legend.position = 'right')
+traj.plot
+
+#compute distance traveled for each strain
+cca.dist <- cca.df
+colnames(cca.dist)[4:5] <- c('x1','y1')
+cca.dist2 <- cca.dist %>%
+  group_by(Strain) %>%
+  mutate(x1 = x1 + 5,
+         x.min = x1[Day == 0],
+         x.max = x1[x1 == max(x1)],
+         length = x.max - x.min)
+
+gg <- ggplot(cca.dist2, aes(x=Strain, y=length, color=Strain))
+distance.plot.cca <- gg + 
+  geom_point(size=3) +
+  scale_color_manual(values = redbluePalette_inv) +
+  theme(axis.text.x = element_text(color='white'))
+distance.plot.cca
+```
+
+#plot loops using median values
+```{r}
+#load data
+meds <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data.xlsx'))
+meds$Strain <- factor(meds$Strain, levels = resilience_levels_inv)
+
+#subset to needed columns, match column names, and compute median RBCs and parasite densities
+meds.small <- meds[c('Strain','SacDay','RBC_Accuri','Parasite.Density','Infected_yn')]
+colnames(meds.small)[2] <- 'Day'
+meds.small$Day[meds.small$Infected_yn == F] <- 0
+meds.small <- meds.small %>%
+  group_by(Strain, Day) %>%
+  mutate(RBC_Accuri = median(RBC_Accuri, na.rm = T), #compute medians
+         Parasite.Density = median(Parasite.Density, na.rm = T)) %>%
+  unique()
+
+#join RBCs/parasites with PCA/CCA values
+tmp <- left_join(cca.dist2, meds.small)
+tmp <- tmp[order(tmp$Day, decreasing = F),]
+
+tmp.pca <- left_join(pca.dist2, meds.small)
+tmp.pca <- tmp.pca[order(tmp.pca$Day, decreasing = F),]
+tmp.pca <- tmp.pca %>%
+  group_by(Strain) %>%
+  mutate(x1.corrected = x1 - x1[Day == 0])
+tmp.pca <- tmp.pca[order(tmp.pca$Strain),]
+
+gg <- ggplot(tmp.pca[is.na(tmp.pca$Parasite.Density) == F,], aes(x=Parasite.Density/1000000, y=x1.corrected, color=Strain, label=Day))
+metab_loop <- gg + 
+  geom_path(size=1) +
+  #geom_text() +
+  scale_color_manual(values = redbluePalette_inv) +
+  #scale_y_reverse() +
+  labs(x= bquote(10^6~~'parasites /'~mu*'L'), y='PC1 distance')
+metab_loop
+
+gg <- ggplot(tmp.pca[is.na(tmp.pca$Parasite.Density) == F,], aes(x=Parasite.Density/1000000, y=RBC_Accuri, color=Strain, label=Day))
+rbc_loop <- gg + 
+  geom_path(size=1, aes(group=Strain)) +
+  #geom_text() +
+  labs(x= bquote(10^6~~'parasites /'~mu*'L'), y=bquote(10^6~~'RBC /'~mu*'L')) +
+  scale_color_manual(values = redbluePalette_inv) +
+  theme(legend.position = 'none')
+rbc_loop
+
+leg <- get_legend(metab_loop + theme(legend.direction = "vertical", legend.justification="center", legend.box.just = "center", legend.position = 'bottom'))
+
+metab_loop2 <- metab_loop + theme(legend.position = 'none')
+loops <- plot_grid(rbc_loop, metab_loop2, nrow = 1, leg, rel_widths=c(1,1.025,0.5))
+
+#ggsave('prettyplots_2_loops.pdf', loops, height = 2, width = 5, units='in')
+```
