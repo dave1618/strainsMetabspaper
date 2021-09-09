@@ -1,0 +1,211 @@
+
+---
+title: "metabolic data"
+author: "Nicole Davis"
+date: "5/30/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(shiny)
+library(ggplot2)
+library(openxlsx)
+library(readxl)
+library(reshape2)
+library(cowplot)
+library(dplyr)
+library(stringr)
+theme_set(theme_cowplot(font_size=10))
+
+setwd('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/')
+
+metab_info <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/correlations_Nicoles data_20200216/StrainsMetabs_metabolite_info.xlsx')
+
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/correlations_Nicoles data_20200216/BIOCHEMICALS.match.Rdata')
+
+metab_info <- left_join(metab_info, BIOCHEMICALS.match)
+
+metab1 <- data.frame(read.xlsx('strains_metabs_data.xlsx')) #z-scores
+meta <- read.xlsx('strains_metabs_data.xlsx', sheet=2)
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+redbluePalette_inv <- rev(redbluePalette)
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ')
+metab1$Strain <- factor(metab1$Strain, levels=resilience_levels)
+
+physcols <- c('RBC.Initial', 'Temperature.Initial', 'Weight.Initial', 'Weight',
+              'Temperature','RBC','Blood.Glucose','Parasitemia','RBC_Accuri','Parasite.Density','RBC.Delta',
+              'Temperature.Delta','Weight.Delta','Weight.Percent.Loss')
+livercols <- c('AST','ALT')
+cytocols <- c("EOTAXIN", "GSCF.CSF3", "GMCSF", "GROA", "IFNA", "IFNG", "IL10", "IL12P70", "IL13", 
+              "IL15.IL15R", "IL17A", "IL18", "IL1A", "IL1B", "IL2", "IL22", "IL23", "IL27", "IL28", 
+              "IL3", "IL31", "IL4", "IL5", "IL6", "IL9", "IP10", "LEPTIN", "LIF", "LIX", "MCSF", 
+              "MCP1", "MCP3", "MIP1A", "MIP1B", "MIP2", "RANTES", "TGFB", "TNFA", "VEGF")
+metabcols <- colnames(metab1)[108:ncol(metab1)]
+flowcols <- c('Platelets', 'Early.Reticulocytes', 'Late.Reticulocytes', 'Erythrocytes', 'NK.Cells', 'B.Cells', 'Granulocytes', 'Granulocytes..Ly6C_pos', 'Granulocytes..Ly6C_neg', 'Monocytes', 'Monocytes..Ly6C_pos', 'Monocytes..Ly6C_neg', 'T.Cells', 'CD4.T.Cells', 'CD8.T.Cells', 'gd.T.Cells')
+
+aminoacids <- c('arginine','histidine','tyrosine','serine','threonine','glycine','lysine','proline',
+                'valine','leucine','isoleucine','phenylalanine','tryptophan','methionine','cysteine',
+                'asparagine','aspartate','glutamine','glutamate','alanine')
+
+median_cols <- c(physcols, livercols, cytocols, metabcols, flowcols)
+
+metab1$Infected_yn[metab1$Infected_yn == TRUE] <- 'Infected'
+metab1$Infected_yn[metab1$Infected_yn == FALSE] <- 'Uninfected'
+
+########here I am calling median of uninfected the d0 infected#######
+metab_tmp <- metab1[metab1$Infected_yn == 'Uninfected',]
+metab_tmp$SacDay <- 0
+metab_tmp$Infected_yn <- 'Infected'
+
+metab1 <- rbind(metab1, metab_tmp)
+
+metab1 <- metab1[metab1$Experiment %in% c('StrainsMetabs_129_2_B6_2','StrainsMetabs_B6_1') | metab1$Strain != 'C57BL/6',] #this excludes the control B6 mice from the various cohorts, so we have approximately the same amount of B6 and other strains
+########
+
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+```
+
+```{r}
+metab2 <- metab1
+
+metab2inf <- metab2[metab2$Infected_yn == 'Infected',]
+metab2inf <- metab2inf[order(metab2inf$Strain, metab2inf$SacDay),]
+
+metab2$Parasite.Density[is.na(metab2$Parasite.Density) == TRUE] <- 0
+metab2$Parasitemia[is.na(metab2$Parasitemia) == TRUE] <- 0
+
+metab2$SacDay[metab2$Infected_yn == 'Uninfected'] <- 4
+metab2 <- metab2[order(metab2$Strain, metab2$SacDay),] #median days
+```
+
+#urea cycle metabolites plot
+```{r}
+metab2$Strain <- factor(metab2$Strain, levels = c('C57BL/6','A/J','NOD/ShiLtJ','PWK/PhJ','NZO/HILtJ','CAST/EiJ','129S1/SvImJ','WSB/EiJ'))
+
+#convert ALT to z-score like the metabolites for plotting
+mean <- mean(metab2$ALT[metab2$Infected_yn == "Uninfected" & metab2$Strain == 'C57BL/6'], na.rm=T)
+stdv <- sd(metab2$ALT[metab2$Infected_yn == "Uninfected" & metab2$Strain == 'C57BL/6'], na.rm=T)
+metab2b <- metab2
+metab2b$ALT <- scale(metab2b$ALT, center = mean, scale = stdv)
+
+little <- metab2b[c('SacDay','Strain','arginine','ALT','ornithine','citrulline')]
+colnames(little) <- c('SacDay','Strain','Arginine','ALT','Ornithine','Citrulline')
+little <- melt(little, id.vars = c('SacDay','Strain'))
+little$variable <- factor(little$variable, levels = c('Citrulline','ALT','Arginine','Ornithine'))
+
+little2 <- little %>%
+  group_by(Strain, SacDay, variable) %>%
+  mutate(value.mean = mean(value, na.rm = T),
+         value.se = ste(value, na.rm = T)) %>%
+  select(Strain, SacDay, variable, value.mean, value.se) %>%
+  unique()
+
+#compute p-values for 
+little.t <- little %>%
+  group_by(Strain, variable) %>%
+  summarize(d5 = ifelse(length(value[SacDay==5][is.na(value[SacDay==5])==F]) < 1, yes = NA, no = t.test(value[SacDay == 5], value[SacDay == 0])$p.value),
+            d6 = t.test(value[SacDay == 6], value[SacDay == 0])$p.value,
+            d7 = t.test(value[SacDay == 7], value[SacDay == 0])$p.value,
+            d8 = t.test(value[SacDay == 8], value[SacDay == 0])$p.value,
+            d9 = t.test(value[SacDay == 9], value[SacDay == 0])$p.value,
+            d10 = ifelse(length(value[SacDay==10][is.na(value[SacDay==10])==F]) < 1, yes = NA, no = t.test(value[SacDay == 10], value[SacDay == 0])$p.value),
+            d11 = ifelse(length(value[SacDay==11][is.na(value[SacDay==11])==F]) < 1, yes = NA, no = t.test(value[SacDay == 11], value[SacDay == 0])$p.value),
+            d12 = ifelse(length(value[SacDay==12][is.na(value[SacDay==12])==F]) < 1, yes = NA, no = t.test(value[SacDay == 12], value[SacDay == 0])$p.value),
+            d13 = ifelse(length(value[SacDay==13][is.na(value[SacDay==13])==F]) < 1, yes = NA, no = t.test(value[SacDay == 13], value[SacDay == 0])$p.value),
+            d14 = ifelse(length(value[SacDay==14][is.na(value[SacDay==14])==F]) < 1, yes = NA, no = t.test(value[SacDay == 14], value[SacDay == 0])$p.value),
+            d15 = ifelse(length(value[SacDay==15][is.na(value[SacDay==15])==F]) < 1, yes = NA, no = t.test(value[SacDay == 15], value[SacDay == 0])$p.value))
+
+little.t.tmp <- little.t
+#little.t.tmp[3:13] <- apply(little.t.tmp[3:13], 2, p.adjust)
+
+cut.custom <- function(x) {cut(x, breaks=c(0,.05,1), labels=c('*',''))}
+little.t.tmp[3:13] <- apply(little.t.tmp[3:13], 2, cut.custom)
+little.t.tmp[is.na(little.t.tmp) == T] <- ''
+
+#make a df for labeling the graph
+little.labs <- melt(little.t.tmp, id.vars = c('Strain','variable'),variable.name='SacDay',value.name = 'lab')
+little.labs$SacDay <- as.numeric(str_replace(little.labs$SacDay, 'd', ''))
+little.labs$y <- 4.5
+little.labs$y[little.labs$variable == 'Arginine'] <- 5.5
+little.labs$y[little.labs$variable == 'Ornithine'] <- 6.5
+little.labs$y[little.labs$variable == 'Citrulline'] <- 7.5
+#it's hard to see the d8 PWK & NOD asterisks, fix that
+little.labs$y[little.labs$variable == 'ALT' & little.labs$Strain %in% c('NOD/ShiLtJ','PWK/PhJ') & little.labs$SacDay == 8] <- -0.5
+little.labs$y[little.labs$variable == 'Arginine' & little.labs$Strain %in% c('NOD/ShiLtJ','PWK/PhJ') & little.labs$SacDay == 8] <- -1.25
+little.labs$y[little.labs$variable == 'Ornithine' & little.labs$Strain %in% c('NOD/ShiLtJ') & little.labs$SacDay == 8] <- -2
+
+
+#merge the 2
+little3 <- left_join(little2, little.t.tmp)
+
+gg <- ggplot(little3[little3$variable %in% c('Ornithine','Arginine','Citrulline'),],
+            aes(x=SacDay, y= value.mean, color=variable))
+gg1 <- gg +
+  facet_wrap(~Strain, nrow=2) +
+  geom_hline(yintercept = 0, size=0.2, linetype='dotted') +
+  geom_hline(yintercept = 2.5, size=0.2, linetype='dotted') +
+  geom_hline(yintercept = 5, size=0.2, linetype='dotted') +
+  geom_hline(yintercept = 7.5, size=0.2, linetype='dotted') +
+  geom_hline(yintercept = -2.5, size=0.2, linetype='dotted') +
+  geom_errorbar(aes(ymax = value.mean + value.se, ymin = value.mean - value.se, width = 0.2)) +
+  geom_line(data = little3[little3$variable == 'ALT',], size=1, color='darkgray', aes(linetype='ALT')) +
+  geom_errorbar(data = little3[little3$variable == 'ALT',], color = 'darkgray', aes(ymax = value.mean + value.se, ymin = value.mean - value.se, width = 0.2)) +
+  labs(linetype='') +
+  geom_line(size=1) + 
+  scale_color_manual(values = c('steelblue4','black','red2')) + #'purple'
+  scale_x_continuous(limits=c(NA,15)) +
+  #guides(color=FALSE) +
+  geom_text(data = little.labs[little.labs$variable != 'ALT',], size=5, aes(x=SacDay, y=y, label=lab)) +
+  geom_text(data = little.labs[little.labs$variable == 'ALT',], size=5, aes(x=SacDay, y=y, label=lab), color='darkgray') +
+  labs(x='Days Post Infection', color='Metabolite', y='Z-scores')
+
+gg1 #export as 3.5x7
+
+ggsave('prettyplots_4_ureametabs.pdf', units = 'in', height = 2.5, width = 6, useDingbats = F, device = 'pdf')
+```
+
+#uninfected analysis & plots
+```{r}
+metab1uninf <- metab1[metab1$Infected_yn == 'Uninfected',]
+weirdob6 <- metab1uninf$Mouse.ID[metab1uninf$SacDay == 9 & metab1uninf$Strain == 'C57BL/6'] #these B6 on the PCA plot are intermediate between sick and healthy. I suspect non-infectious liver damage as I double checked their blood on the scope and they are parasite free.
+metab1uninf <- metab1uninf[!(metab1uninf$Mouse.ID %in% weirdob6),]
+
+metab1uninf <- metab1uninf[colnames(metab1uninf) %in% c('Strain',metabcols)]
+  
+metab1uninf <- melt(metab1uninf, id.vars = c('Strain'))
+metab1uninf$Resilience <- 'R'
+metab1uninf$Resilience[metab1uninf$Strain %in% c('CAST/EiJ','A/J','NOD/ShiLtJ','PWK/PhJ')] <- 'NR'
+
+metab1uninf$variable <- as.character(metab1uninf$variable)
+
+#t-tests, to see which metabolites differentiate the "resilient" and "non-resilient" groups
+metab1uninf.t <- metab1uninf %>%
+  group_by(variable) %>% #for each metabolite
+  filter(!all(is.na(value))) %>% #remove metabolites with all NAs
+  filter(!sd(value, na.rm = T) == 0) %>% #remove metabolite with standard deviation of 0
+  mutate(t = t.test(x = value[Resilience == 'R'], y = value[Resilience == 'NR'],
+                    na.rm=TRUE)$statistic, #get t-score
+         p = t.test(x = value[Resilience == 'R'], y = value[Resilience == 'NR'],
+                    na.rm=TRUE)$p.value) %>%
+  select(variable,t,p) %>% #keep just metabolite, t-score, and p-value columns
+  unique() #just keep one copy of each
+  
+metab1uninf.t$p.bonferroni <- p.adjust(metab1uninf.t$p, method = 'bonferroni')
+metab1uninf.t$p.fdr <- p.adjust(metab1uninf.t$p, method = 'fdr')
+
+metab1uninf.t <- metab1uninf.t[order(metab1uninf.t$p.bonferroni, decreasing = F),]
+signif <- metab1uninf.t$variable[metab1uninf.t$p.bonferroni <= 0.05]
+metab1uninf.t <- merge(metab_info, metab1uninf.t, by.x = 'BIOCHEMICAL.weirdformat', by.y = 'variable')
+
+#write.xlsx(metab1uninf.t, file='uninfected_metabolites.xlsx')
+```
+
