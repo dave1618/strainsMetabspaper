@@ -1,0 +1,192 @@
+---
+title: "starvation metabolomics"
+author: "Nicole Davis"
+date: "3/10/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This script analyzes data from Pietrocola et al. 2017, Autophagy, 
+Metabolic effects of fasting on human and mouse blood in vivo
+
+http://dx.doi.org/10.1080/15548627.2016.1271513
+
+and from Andrianova et al. 2020, metabolites, Microbiome-Metabolome Signature of Acute Kidney Injury
+
+https://doi.org/10.3390/metabo10040142
+
+and from Ganeshan et al. 2019, Cell, Energetic Trade-Offs and Hypometabolic States Promote Disease Tolerance
+
+https://doi.org/10.1016/j.cell.2019.01.050
+
+
+```{r}
+#load needed packages
+library(dplyr)
+library(stringr)
+library(openxlsx)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+library(quantable)
+library(scales)
+
+#plotting themes
+theme_set(theme_classic())
+redbluePalette <- c('red1','royalblue2')
+
+#load needed packages for heatmaps
+library(ComplexHeatmap)
+library(circlize)
+```
+
+#load data
+```{r}
+####### carnitines w/ AKI #######
+carn <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/carnitines/carnitines.xlsx'))
+
+colnames(carn) <- c('metab','AKI','ncarns')
+#################################
+
+##### malarial mice ######
+strainsMetabs <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data_fc.xlsx'))
+
+strainsMetabs <- strainsMetabs[c(3,8,10,111:ncol(strainsMetabs))]
+
+#the strains data is log2-transformed already, so undo that
+strainsMetabs[4:ncol(strainsMetabs)] <- 2^strainsMetabs[4:ncol(strainsMetabs)]
+##########################
+
+####### starvation #######
+starv <- data.frame(read.xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/starvation in mice and humans/starvation_carnitines.xlsx", sheet=1))
+
+starv$FCStarv <- as.numeric(starv$FCStarv)
+starv$FCStarv <- 2^starv$FCStarv #in this script, I undo all the log2 fold changes done in raw data file (if applicable) so I can redo it for all data together, later in script
+##########################
+```
+
+#fold-change, strains
+```{r}
+#median calculations
+strainsMetabs$SacDay[strainsMetabs$Infected_yn == FALSE] <- 0 ; strainsMetabs$Infected_yn <- NULL
+
+#median value for B6 and CAST, just on d9
+strainsMetabsMedian <- strainsMetabs %>%
+  group_by(Strain, SacDay) %>%
+  mutate_all(median, na.rm=TRUE) %>%
+  unique()
+
+rownames(strainsMetabsMedian) <- paste0('d', strainsMetabsMedian$SacDay, '_', strainsMetabsMedian$Strain)
+strainsMetabsMedian <- data.frame(strainsMetabsMedian)
+
+#just d9 for b6 and cast
+strainsMetabsMedian <- strainsMetabsMedian[strainsMetabsMedian$Strain %in% c('C57BL/6','CAST/EiJ') & strainsMetabsMedian$SacDay == 9,]
+strains.fc <- strainsMetabsMedian[3:ncol(strainsMetabsMedian)]
+```
+
+#merge with AKI data
+```{r}
+#now, you want to add two columns to the carnitines business - 1 for inf. B6 and 1 for inf. CAST
+strains.fc <- data.frame(t(strains.fc))
+colnames(strains.fc) <- c('BL6', 'CAST')
+
+#merge
+carn <- merge(carn, strains.fc, by.x = 'metab', by.y = 'row.names', all.x = TRUE, all.y = FALSE)
+```
+
+#merge starvation with carnitines df
+```{r}
+colnames(starv) <- c('metab', 'Starvation')
+
+carn <- merge(carn, starv, by.x = 'metab', by.y = 'metab', all.x = T, all.y = F)
+```
+
+#add the Ganeshan LPS data
+```{r}
+#units are all micromolar
+lps <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/LPS in mice/Ganeshan et al. 2019 - table s1, acylcarnitines.xlsx', sheet = 'samplesmetabs'))
+rownames(lps) <- lps$X1 ; lps$X1 <- NULL
+lps <- data.frame(t(lps))
+
+lps.meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/LPS in mice/Ganeshan et al. 2019 - table s1, acylcarnitines.xlsx', sheet = 'samples'))
+lps.meta$Sample.ID <- paste0('X',lps.meta$Name)
+
+#get log2-foldchange
+#merge
+lps2 <- merge(lps.meta, lps, by.x = 'Sample.ID', by.y = 'row.names')
+lps2 <- lps2[lps2$Temperature == 22,]
+
+uninf.names <- lps2$Sample.ID[lps2$Treatment == 'Saline']
+
+lps.uninf <- lps2[lps2$Sample.ID %in% uninf.names, 8:ncol(lps2)]
+lps.uninf.values <- colMeans(lps.uninf)
+
+lps.fc <- sweep(lps, 2, lps.uninf.values, '/')
+
+inf.22.names <- lps2$Sample.ID[lps2$Treatment == '1 mg/kg LPS' & lps2$Temperature == 22]
+
+lps.heat <- lps.fc[rownames(lps.fc) %in% inf.22.names,]
+LPS <- data.frame(LPS = apply(lps.heat, 2, median))
+
+carn <- merge(carn, LPS, by.x = 'metab', by.y = 'row.names', all.x = T)
+rownames(carn) <- carn$Row.names; carn$Row.names <- NULL
+
+carnM <- carn
+rownames(carnM) <- carnM$metab ; carnM$metab <- NULL
+carnM <- log2(carnM)
+
+carnM <- carnM[order(carnM$ncarns, decreasing = F),]
+carnM <- carnM[,c(4,3,6,1,5)] #removes ncarns, sorts
+carnM <- data.frame(t(carnM))
+
+#remove any column w/ 3 NAs or more, which roughly equates to 3 or fewer unique values
+#get num NAs
+my.fun <- function(x) {length(unique(x))}
+numvals <- apply(carnM, 2, my.fun) #good, now subset to ones that have 4 or more unique values
+
+carnM <- data.frame(t(carnM))
+carnM$numvals <- numvals
+
+carnM.sub <- carnM[carnM$numvals > 3,] ; carnM.sub$numvals <- NULL
+
+
+#names are annoying, shorten them
+rownames(carnM.sub)
+newrownames <- c('C0','C2','C6-DC','C6','C8','C10:1','C10','C12','C12:1','C14:1','C14','C16:1','C16','C16-OH','C18:2','C18:1','C18','C18-OH','C20:4','C20','C20:1')
+
+rownames(carnM.sub) <- newrownames
+```
+
+#plot as heatmap
+```{r}
+Heatmap(t(carnM.sub), col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")),
+        show_heatmap_legend = T, 
+        cluster_columns=F, 
+        cluster_rows=F, 
+        row_names_gp = gpar(fontsize = 20), 
+        column_names_gp = gpar(fontsize = 20),
+        heatmap_legend_param = list(title_gp = gpar(fontsize = 12), labels_gp =
+                                      gpar(fontsize = 12)),
+        name = 'log2\nfold-\nchange') #try colorRamp of -1 to 1
+#save as 9x3.5
+
+Heatmap(t(carnM.sub), col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")),
+        show_heatmap_legend = T, 
+        cluster_columns=F, 
+        cluster_rows=F,
+        row_names_gp = gpar(fontsize = 18), 
+        column_names_gp = gpar(fontsize = 18), 
+        name = 'log2\nfold-change') #try colorRamp of -1 to 1
+
+col_fun = colorRamp2(c(0, 0.5, 1), c("blue", "white", "red"))
+lgd = Legend(col_fun = col_fun, title = "foo")
+
+Heatmap(t(carnM.sub), col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")),
+        show_heatmap_legend = T, 
+        cluster_columns=F, 
+        cluster_rows=F,
+        row_names_gp = gpar(fontsize = 18), 
+        column_names_gp = gpar(fontsize = 18), 
+        name = 'log2\nfold-change') #try colorRamp of -1 to 1
+```
