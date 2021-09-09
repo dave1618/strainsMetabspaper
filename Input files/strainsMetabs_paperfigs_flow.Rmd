@@ -1,0 +1,153 @@
+---
+title: "Malaria_prepdata"
+author: "Nicole Davis"
+date: "12/15/2017"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#use DOs/big screen data/follow-ups for parasitemia / physiology
+#use DOs/follow-ups for survival
+
+#prepare workspace
+```{r}
+library(readxl)
+library(openxlsx)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(reshape2)
+library(cowplot)
+library(survival)
+library(survminer)
+library(circlize)
+theme_set(theme_bw())
+
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+
+#set colors & resilience levels
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ')
+resil <- c('C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ')
+nonresil <- setdiff(resilience_levels, resil)
+
+redbluePalette <- c('red4','red3','red1','palevioletred1','steelblue2','royalblue2','mediumblue','navy')
+
+theme_set(theme_cowplot())
+```
+
+#load data, prep
+```{r}
+sd <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/StrainsMetabs_flow_table.xlsx'))
+
+#a few fixer-uppers
+colnames(sd)[colnames(sd) == 'Monocytes..Ly6c_pos'] <- 'Monocytes..Ly6C_pos'
+sd$Strain <- factor(sd$Strain, levels = resilience_levels)
+
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/ParametersMeasured.Rdata')
+physcols <- mlist[[1]]
+flowcols <- mlist[[2]]
+livercols <- mlist[[3]]
+cytocols <- mlist[[4]]
+metabcols <- mlist[[5]]
+allcols <- unlist(mlist)
+
+rm(mlist)
+
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+```
+
+#means & SDs
+```{r}
+sd2 <- sd[c('Strain','Day','Infected_yn',flowcols)]
+sd2$Day[sd2$Infected_yn == F] <- 0
+
+sd.mean <- sd2 %>%
+  group_by(Strain, Day, Infected_yn) %>%
+  transmute_at(flowcols, mean, na.rm=T) %>%
+  unique()
+sd.mean.melt <- melt(sd.mean, id.vars = c('Strain','Day','Infected_yn'), value.name='Mean')
+
+
+sd.ste <- sd2 %>%
+  group_by(Strain, Day, Infected_yn) %>%
+  transmute_at(flowcols, ste, na.rm=T) %>%
+  unique()
+sd.ste.melt <- melt(sd.ste, id.vars = c('Strain','Day','Infected_yn'), value.name='SE')
+
+sd.melt <- left_join(sd.mean.melt, sd.ste.melt)
+```
+
+#plot
+```{r}
+gg <- ggplot(sd.melt, aes(x=Day, y=Mean, color = Strain))
+gg + 
+  geom_line(aes(group=Strain)) +
+  geom_errorbar(aes(ymax = Mean + SE, ymin = Mean - SE), width=0.2) +
+  scale_color_manual(values = redbluePalette) +
+  facet_wrap(~variable, scales = 'free')
+```
+
+#plot for paper
+```{r}
+keeps <- flowcols[!(flowcols %in% c('Monocytes..Ly6C_pos', 'Monocytes..Ly6C_neg', 'Granulocytes..Ly6C_pos', 'Granulocytes..Ly6C_neg'))]
+
+sd.melt2 <- sd.melt[sd.melt$variable %in% keeps,]
+sd.melt2$variable <- as.character(sd.melt2$variable)
+
+sd.melt2$Day <- as.character(sd.melt2$Day)
+sd.melt2$Day[sd.melt2$Day == '0'] <- 'UI'
+sd.melt2$Day <- factor(sd.melt2$Day, levels = c('UI', as.character(1:17)))
+
+sd.melt2$variable[sd.melt2$variable == 'Early.Reticulocytes'] <- 'Early reticulocytes'
+sd.melt2$variable[sd.melt2$variable == 'Late.Reticulocytes'] <- 'Late reticulocytes'
+sd.melt2$variable[sd.melt2$variable == 'NK.Cells'] <- 'NK cells'
+sd.melt2$variable[sd.melt2$variable == 'B.Cells'] <- 'B cells'
+sd.melt2$variable[sd.melt2$variable == 'T.Cells'] <- 'T cells'
+sd.melt2$variable[sd.melt2$variable == 'T.Cells'] <- 'T cells'
+sd.melt2$variable[sd.melt2$variable == 'CD4.T.Cells'] <- 'CD4 T cells'
+sd.melt2$variable[sd.melt2$variable == 'CD8.T.Cells'] <- 'CD8 T cells'
+sd.melt2$variable[sd.melt2$variable == 'gd.T.Cells'] <- 'Gamma delta T cells'
+
+sd.melt2$variable <- factor(sd.melt2$variable, levels = c('Erythrocytes','Early reticulocytes','Late reticulocytes','Platelets','NK cells','Monocytes','Granulocytes','B cells', 'T cells', 'CD4 T cells','CD8 T cells', 'Gamma delta T cells'))
+
+gg <- ggplot(sd.melt2[sd.melt2$Strain != 'WSB/EiJ' & sd.melt2$Day %in% c('UI',as.character(1:11)),], aes(x=Day, y=Mean, color = Strain))
+plot <- gg + 
+  geom_line(aes(group=Strain)) +
+  geom_errorbar(aes(ymax = Mean + SE, ymin = Mean - SE), width=0.2) +
+  scale_color_manual(values = redbluePalette) +
+  facet_wrap(~variable, scales = 'free') +
+  labs(x='DPI', y='Cell count') +
+  scale_x_discrete(limits=c("UI", as.character(1:11)), breaks = c('UI','3','5','7','9','11')) +
+  theme(legend.position = 'none')
+plot
+
+thick <- gg + 
+  geom_line(aes(group=Strain), size=2) +
+  geom_errorbar(aes(ymax = Mean + SE, ymin = Mean - SE), width=0.2) +
+  scale_color_manual(values = redbluePalette) +
+  facet_wrap(~variable, scales = 'free') +
+  labs(x='DPI', y='Cell count') +
+  scale_x_discrete(limits=c("UI", as.character(1:11)), breaks = c('UI','3','5','7','9','11')) +
+  theme(legend.justification = 'center')
+
+legend <- get_legend(thick)
+
+plot_grid(plot, legend, rel_widths = c(1,0.25))
+```
+
+```{r}
+#ggsave('prettyplots_flow.pdf', plot, width=8, height=8, units="in", useDingbats=FALSE)
+```

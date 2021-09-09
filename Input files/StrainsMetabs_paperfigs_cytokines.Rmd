@@ -1,0 +1,325 @@
+---
+title: "Cytokines_strains"
+author: "Nicole Davis"
+date: "5/28/2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This script will analyze cytokine data and generate the figure show in Fig. 2 of Davis et al., mBio 2021.
+              
+```{r}
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(readxl)
+library(openxlsx)
+library(ComplexHeatmap)
+library(circlize)
+
+theme_set(theme_bw())
+
+cbbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7","#000000")
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+
+#CCcolors (part of qtl2 package)
+#       AJ        B6       129       NOD       NZO      CAST       PWK       WSB
+#"#FFDC00" "#888888" "#F08080" "#0064C9" "#7FDBFF" "#2ECC40" "#FF4136" "#B10DC9" 
+
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ') #disclaimer this is actually the order of max parasite density, not resilience, because resilience is harder to define until I've done more survival experiments
+
+all_cytokines <- c("EOTAXIN", "GSCF.CSF3", "GMCSF", "GROA", "IFNA", "IFNG", "IL10", "IL12P70", "IL13", "IL15.IL15R", "IL17A", "IL18", "IL1A", "IL1B", "IL2", "IL22", "IL23", "IL27", "IL28", "IL3", "IL31", "IL4", "IL5", "IL6", "IL9", "IP10", "LEPTIN", "LIF", "LIX", "MCSF", "MCP1", "MCP3", "MIP1A", "MIP1B", "MIP2", "RANTES", "TGFB", "TNFA", "VEGF")
+```
+
+#load and clean strains data
+```{r}
+filepath <- '/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Luminex/'
+filenames <- paste0('Mouse strains and Aging-MouseLuminex38-39plex-P-', c('1-1','2-1','3-1','4-1','5-1','6-1'), '.xlsx')
+files <- paste0(filepath, filenames)
+
+#read in files
+data <- lapply(files, function(x){data.frame(read_xlsx(x, sheet='RAW MFI'))})
+beadinfo <- lapply(files, function(x){data.frame(read_xlsx(x, sheet='BEAD COUNT'))})
+
+#load info about which samples have low beads
+lowbeadsamples <- read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Luminex/lowbeadsamples.xlsx')
+
+#"low beads" was determined by HIMC. "Percent.LowBeads" is the percentage of 43 measurements (39 cytokines+ 4 quality control CHEXs) that are at or below 25 beads
+
+#get rid of ones w/ 50% or more low beads. note this is a relatively arbitrary choice.
+lowbeadsamples <- lowbeadsamples[lowbeadsamples$Percent.LowBeads > 0.5,]
+
+dat <- rbind(data[[1]],data[[2]],data[[3]],data[[4]],data[[5]],data[[6]])
+bead <- rbind(beadinfo[[1]],beadinfo[[2]],beadinfo[[3]],beadinfo[[4]],beadinfo[[5]],beadinfo[[6]])
+
+#dat and bead should have the same dimensions, do they?
+dim(dat) == dim(bead)
+
+sd <- data.frame(read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/MouseStrains_x_Metabolites_all_prepped.xlsx', sheet=1)) #this is the mouse/sample data, like day, infected_yn, treatment, etc.
+sd0 <- sd
+sd0$SacDay <- as.numeric(sd0$SacDay)
+sd0$Mouse.ID <- as.character(sd0$Mouse.ID)
+
+sd0 <- data.frame(Mouse.ID = sd0$Mouse.ID,
+                  Strain = sd0$Strain,
+                  Infected_yn = sd0$Infected_yn,
+                  SacDay = sd0$SacDay,
+                  Experiment = sd0$Experiment,
+                  stringsAsFactors = FALSE)
+
+removeb6 <- unique(sd0$Mouse.ID[sd0$Strain == 'C57BL/6' & !(sd0$Experiment %in% c('StrainsMetabs_129_2_B6_2','StrainsMetabs_B6_1'))]) #these are the control B6 that I included across datasets, will not use here but may be useful for inter-experimental variability analysis
+
+sd0 <- sd0[!(sd0$Mouse.ID %in% removeb6),]
+
+#select only one row for each mouse, the sac day row
+sd0 <- sd0[!(duplicated(sd0$Mouse.ID)),]
+
+strains <- levels(as.factor(sd0$Strain))
+
+merged <- merge(sd0, dat, by.x = 'Mouse.ID', by.y = 'Name', sort=FALSE, all.x = FALSE) #merge the sample data with the cytokine data, should be 
+
+merged_good <- merged[!(merged$Mouse.ID %in% lowbeadsamples$Mouse.ID),]
+
+#check merged_good to see what was removed
+removedonpurpose <- c(removeb6, lowbeadsamples$Mouse.ID)
+tmp <- unique(sd$Mouse.ID[!(sd$Mouse.ID %in% merged_good$Mouse.ID)])
+tmp <- tmp[!(tmp %in% removedonpurpose)]            
+tmp2 <- sd[sd$Mouse.ID %in% tmp,] 
+#looked through these animals and they all have '0's for Luminex_yn, so we're good.
+
+dim(merged_good)
+#should be 384 animals
+
+unique(merged_good$Mouse.ID) 
+length(unique(merged_good$Mouse.ID)) == dim(merged_good)[1] #should be TRUE
+
+########### 384 good samples w/out aging experiments of Victoria's ###########
+
+ids <- colnames(merged_good)[1:13] #select the non-cytokine columns, last should be CHEX4
+ids
+
+melted <- melt(merged_good, id.vars=ids, variable.name='Cytokine', value.name='RawMFI') #melt the cytokine columns, nrow should be 39*current nrow
+
+melted$SAMPLE.MEASUREMENT <- paste0(melted$Mouse.ID, melted$Cytokine)
+length(unique(melted$SAMPLE.MEASUREMENT)) == length(melted$SAMPLE.MEASUREMENT)
+#this should be TRUE. if not, you need to do some data cleaning
+
+####check how well the bead stuff matches the sample data stuff####
+bead$Name[!(bead$Name %in% sd0$Mouse.ID)] #this is fine, 146 ids that are either standards or Victoria's aging samples, rest are B6 that were controls in non-B6 experiments
+sd0$MouseID[!(sd0$Mouse.ID %in% bead$Name)] #great, null so everything in bead is in the sample data
+
+#get just sample data to merge with bead data
+merged_good_samples <- data.frame(Mouse.ID = merged_good$Mouse.ID)
+
+bead_good <- bead[bead$Name %in% merged_good$Mouse.ID,] #subset bead samples to samples kept so far
+#nrow of merged_good should be same as bead_good
+dim(bead_good) == dim(merged_good)
+#if needed, see what dropped out
+#bead_good$Name[!(bead_good$Name %in% merged_good$Mouse.ID)] #ok, everything that dropped out is Victoria's samples, standards, low bead samples, and excluded B6 controls
+
+#no longer need plate info
+bead_good <- bead_good[,!(colnames(bead_good) %in% c('Plate','Well','Sample','Type','CHEX1','CHEX2','CHEX3','CHEX4'))]
+
+bead_melted <- melt(bead_good, id.vars='Name', variable.name='Cytokine', value.name='BeadCount') #melt the cytokine columns
+bead_melted$SAMPLE.MEASUREMENT <- paste0(bead_melted$Name, bead_melted$Cytokine)
+length(unique(bead_melted$SAMPLE.MEASUREMENT)) == length(bead_melted$SAMPLE.MEASUREMENT)
+#this should be TRUE
+
+dim(bead_melted) == dim(melted) #nrow should be the same
+
+#decided based on HIMC recommendation
+remove_these_measurements <- bead_melted$SAMPLE.MEASUREMENT[bead_melted$BeadCount <= 25]
+#what's our percentage of badness?
+length(remove_these_measurements) / length(bead_melted$SAMPLE.MEASUREMENT)
+#~3% of our measurements aren't usable in addition to removing the bad samples... seems ok.
+
+cleaned <- melted[!(melted$SAMPLE.MEASUREMENT %in% remove_these_measurements),]
+
+cleaned <- unique(cleaned)
+
+cleaned_wide <- data.frame(Mouse.ID = cleaned$Mouse.ID,
+                           Cytokine = cleaned$Cytokine,
+                           RawMFI = cleaned$RawMFI)
+
+cleaned_wide <- dcast(cleaned_wide, Mouse.ID ~ Cytokine, value.var = 'RawMFI') #this should not generate the aggregation warning or you have duplicates somewhere
+cytokine_tab <- cleaned_wide
+#save(cytokine_tab, file='/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Luminex/cytokine_tab.Rdata') #this can be used for other files
+
+#'cleaned' is the cleaned dataframe you want.
+#'melted' is the dataframe you can compare 'cleaned' to
+```
+
+#combine the dataframes to compare data w/ and w/out poor data values
+```{r}
+cleaned$Cleaned_yn <- 'y'
+melted$Cleaned_yn <- 'n'
+
+mixed <- rbind(melted, cleaned)
+mixed$Cleaned_yn <- factor(mixed$Cleaned_yn, levels=c('y','n'))
+```
+
+#medians
+```{r}
+cleaned <- melted[!(melted$SAMPLE.MEASUREMENT %in% remove_these_measurements),]
+
+cleaned$SacDay[cleaned$Infected_yn == FALSE] <- 0 #assigns all uninfected mice to day "0". no infected mice are day 0, so grouping by day effectively separates infected from uninfected
+cleaned$Infected_yn <- TRUE
+
+#medians.
+cleaned_median <- cleaned %>%
+  group_by(SacDay, Strain, Cytokine) %>%
+  summarize(MedianMFI = median(RawMFI, na.rm=TRUE)) %>%
+  left_join(cleaned)
+
+cleaned_uninf_median <- cleaned[cleaned$SacDay == 0,]
+
+#uninfected medians
+cleaned_median2 <- cleaned_uninf_median %>%
+  group_by(Cytokine, Strain) %>%
+  summarize(UninfMFI = median(RawMFI, na.rm=TRUE),
+            stdvMFI = sd(RawMFI, na.rm=TRUE)) %>%
+  left_join(cleaned_median)
+
+cleaned_median2 <- data.frame(cleaned_median2)
+cleaned_median2$UninfMFI_B6 <- cleaned_median2$UninfMFI[cleaned_median2$Strain=='C57BL/6'][1]
+cleaned_median2$stdvMFI_B6 <- cleaned_median2$stdvMFI[cleaned_median2$Strain=='C57BL/6'][1]
+
+cleaned_median2$NormMFI <- (cleaned_median2$RawMFI - cleaned_median2$UninfMFI) / cleaned_median2$stdvMFI
+cleaned_median2$NormMFI_B6 <- (cleaned_median2$RawMFI - cleaned_median2$UninfMFI_B6) / cleaned_median2$stdvMFI_B6
+
+cleaned_median3 <- cleaned_median2 %>%
+  group_by(Cytokine, Strain, SacDay) %>%
+  summarize(MedianNormMFI = median(NormMFI, na.rm=TRUE),
+            MedianNormMFI_B6 = median(NormMFI_B6, na.rm=TRUE)) %>%
+  left_join(cleaned_median2)
+
+cleaned_median_sum <- cleaned_median3[!duplicated(cleaned_median3[c("Strain", "SacDay","Infected_yn","Cytokine")]),]
+```
+
+#(optional) export from R for other applications
+```{r}
+df <- data.frame(cleaned)
+
+df <- cleaned_median3
+df$SAMPLE.MEASUREMENT <- NULL
+df$MedianNormMFI_B6 <- NULL
+df$UninfMFI <- NULL
+df$stdvMFI <- NULL
+df$MedianNormMFI <- NULL
+df$MedianMFI <- NULL
+#df$RawMFI <- NULL
+df$NormMFI <- NULL
+df$UninfMFI_B6 <- NULL
+df$NormMFI_B6 <- NULL
+df$stdvMFI_B6 <- NULL
+df$Cleaned_yn <- NULL
+
+df2 <- data.frame(Mouse.ID = df$Mouse.ID,
+                 Cytokine = df$Cytokine,
+                 RawMFI = df$RawMFI)
+
+cleaned_export <- dcast(df2, ... ~ Cytokine, value.var = 'RawMFI')
+
+#write.xlsx(cleaned_export, file = '/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Luminex/Cytokines.xlsx')
+```
+
+#heatmaps
+```{r}
+keepforheat_as_character <- c('Experiment', 'Strain', 'Infected_yn', 'SacDay', 'Cytokine', 'RawMFI')
+#keepforheat <- colnames(cleaned_median_inf)[c(4,6,9,22,50,53)]
+
+#only get infected
+cleaned_median_sum2 <- cleaned_median[!duplicated(cleaned_median[c("Strain", "SacDay","Infected_yn","Cytokine")]),]
+cleaned_median_inf2 <- cleaned_median_sum2[cleaned_median_sum2$Infected_yn == TRUE,] #only look at 1 strain at a time
+
+cleaned_median_inf2$Strain <- factor(cleaned_median_inf2$Strain, levels = resilience_levels)
+
+
+heat <- cleaned_median_inf2[colnames(cleaned_median_inf2) %in% keepforheat_as_character]
+
+heat$StrainInfDay <- paste(heat$Strain, heat$SacDay, sep='_')
+
+heat_wide <- dcast(heat, StrainInfDay ~ Cytokine, value.var = 'RawMFI') #cast back out into wide format
+heat_wide <- merge(heat, heat_wide, by.x= 'StrainInfDay', by.y = 'StrainInfDay')
+heat_wide <- heat_wide[!(duplicated(heat_wide$StrainInfDay)),] #remove duplicated rows, should have 74 obs at this point if you haven't removed any strains yet
+heat_wide$Cytokine <- NULL
+heat_wide$RawMFI <- NULL
+rownames(heat_wide) <- heat_wide$StrainInfDay
+```
+
+#complex heatmaps
+```{r}
+#rescale, bind, reorder, subset to desired strains, days, cytokines
+prep_mat <- function(df, strains, days, keepcytokines){
+  ma <- df[,colnames(df) %in% keepcytokines]
+  ma <- ma - min(ma, na.rm=TRUE) + 1
+  ma <- scale(ma) #scale here to get Z-score
+  df <- cbind(df[,!(colnames(df) %in% keepcytokines)], ma)
+  df <- df[order(df$SacDay),]
+  df <- df[df$Strain %in% strains,]
+  df <- df[df$SacDay %in% days,]
+  df <- df[,colnames(df) %in% c(colnames(df)[1:5], keepcytokines)]
+  
+  mat.df <- as.matrix(df[,6:dim(df)[2]])
+  mat.df <- t(mat.df)
+}
+
+keepcytokines <- c('IL4','IL5','IL9','IL13','TGFB','IL10')
+
+nowsb <- strains[strains != 'WSB/EiJ']
+nowsb129 <- strains[!(strains %in% c('WSB/EiJ','129S1/SvImJ'))]
+
+tmp <- prep_mat(heat_wide, 'C57BL/6', days=c(0,3:12), all_cytokines)
+
+#sorting stuff: https://github.com/jokergoo/ComplexHeatmap/issues/8
+# hc <- hclust(dist(tmp))
+# hc$order
+# 
+# hc2 <- hclust(dist(tmp2))
+# hc2$order
+
+#to switch from alphabetical to resilience
+strains
+colnames(tmp2[[1]]) #sort based on this
+
+strain_alphatoresilient <- c(7,4,5,2,3,1,6,8)
+strain_alphatoresilient_nowsb <- c(7,4,5,2,3,6,1)
+strain_alphatoresilient_nowsb129 <- c(6,3,4,1,2,5)
+
+strains_columns <- strain_alphatoresilient_nowsb
+
+hm <- Heatmap(tmp, cluster_columns=FALSE, show_row_names = TRUE, show_heatmap_legend = FALSE) #ok so the clustering is the same, but the plot order is different because of the way hclust plots I guess
+hm
+
+#https://github.com/jokergoo/ComplexHeatmap/issues/136
+use <- as.numeric(row_order(hm))#[[1]])
+
+tmp2 <- lapply(strains, function(x){prep_mat(heat_wide, x, 0:17, all_cytokines)})
+
+all <- cbind(tmp2[[8]], tmp2[[6]], tmp2[[1]], tmp2[[3]], tmp2[[4]], tmp2[[5]], tmp2[[2]], tmp2[[7]])
+heat_wide2 <- heat_wide[colnames(all),]
+group <- as.numeric(heat_wide2$Strain)
+
+col_day = colorRamp2(c(0, 9, 17), c("purple", "white", "forestgreen"))
+
+ha = HeatmapAnnotation(Day = heat_wide2$SacDay,
+                       Strain = heat_wide2$Strain, 
+                       col = list(Strain = c("PWK/PhJ" = "red4", "A/J" = "red3", "NOD/ShiLtJ"= "red1", "CAST/EiJ" = "pink", "C57BL/6" = "steelblue1", "129S1/SvImJ" = "royalblue2", "NZO/HILtJ" = "mediumblue", "WSB/EiJ" = "navy"),
+                                  Day = col_day),
+                       simple_anno_size = unit(3, 'mm'))
+
+ha1 = HeatmapAnnotation(Strain = heat_wide2$Strain, 
+                       col = list(Strain = c("PWK/PhJ" = "red4", "A/J" = "red3", "NOD/ShiLtJ"= "red1", "CAST/EiJ" = "pink", "C57BL/6" = "steelblue1", "129S1/SvImJ" = "royalblue2", "NZO/HILtJ" = "mediumblue", "WSB/EiJ" = "navy")))
+
+ha2 = HeatmapAnnotation(Day = heat_wide2$SacDay,
+                       col = list(Day = col_day))
+
+tmp <- c('1','2','3','4','5','6','7','8')
+
+Heatmap(all, cluster_columns=FALSE, show_row_names = TRUE, show_column_names = F, col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")), name='Log2\nMFI', show_heatmap_legend = T, cluster_rows=T, split = 5, column_split = group, bottom_annotation = ha, row_names_gp = gpar(fontsize = 6), column_title = c('PWK','A/J','NOD','CAST','B6','129','NZO','WSB'), column_title_gp = gpar(fontsize=12), column_title_side = 'bottom', row_title = NULL)
+
+#save as 6.88 x 3.5
+```
