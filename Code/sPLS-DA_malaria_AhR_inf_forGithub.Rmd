@@ -1,0 +1,314 @@
+---
+title: "sPLS-DA malaria"
+author: "Nicole Davis"
+date: "July 27, 2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#setup
+```{r, include = FALSE}
+bioc_packages <- c()
+cran_packages <- c('mixOmics', 'ggplot2', 'reshape2', 'dplyr', 'openxlsx', 'readxl')
+
+sapply(c(cran_packages, bioc_packages), require, character.only = TRUE)
+
+theme_set(theme_bw())
+options(stringsAsFactors = FALSE)
+```
+
+#load data
+```{r, include = FALSE}
+ahr <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/Michelle/AhR metabolomics data/AhR WT raw.xlsx', sheet = 'samplesmetabs'))
+
+#load metabolite info
+metab_info <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/Michelle/AhR metabolomics data/AhR WT raw.xlsx', sheet = 'metabdata')
+
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/BIOCHEMICALS.match.Rdata')
+
+metab_info <- merge(metab_info, BIOCHEMICALS.match, by.x = 'BIOCHEMICAL', by.y = 'BIOCHEMICAL') #keeps chemicals that both datasets have in common
+
+metabcols <- metab_info$BIOCHEMICAL.weirdformat
+#remove bile acids, which are unreliable in plasma
+metabs_keep <- metab_info$BIOCHEMICAL.weirdformat[!(metab_info$SUB.PATHWAY %in% c('Primary Bile Acid Metabolism','Secondary Bile Acid Metabolism'))]
+
+#load sample data
+sample_info <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/Michelle/AhR metabolomics data/AhR WT raw.xlsx', sheet = 'sampledata'))
+sample_info$LiverDamage <- 'low'
+sample_info$LiverDamage[sample_info$Infected. == TRUE] <- 'med'
+sample_info$LiverDamage[sample_info$Mouse.Genotype == 'wt' & sample_info$Day %in% c(7,8) & sample_info$Infected. == TRUE] <- 'high'
+
+#merge samples & metabs
+ahr <- merge(sample_info, ahr, by.x = 'SAMPLE.NAME', by.y = 'Description')
+#subset to just metabolites found in both datasets
+ahr <- ahr[c(colnames(ahr)[1:6], metabs_keep)]
+
+ahr <- ahr[ahr$Infected. == TRUE,] #subset to just infected
+```
+
+#get the data you want for sPLS-DA
+```{r, include=FALSE}
+##remove any parameters with sd == zero
+metabs_df <- ahr[,colnames(ahr) %in% metabs_keep]
+
+zerosd <- sapply(metabs_df, FUN = sd, na.rm=TRUE)
+zerosd.zero <- names(zerosd)[zerosd == 0]
+zerosd.zero #none of these
+zerosd.na <- names(zerosd)[is.na(zerosd) == T]
+zerosd.na #none of these, either; nice
+
+ahr <- ahr[!(colnames(ahr) %in% c(zerosd.zero, zerosd.na))]
+
+X = as.matrix(ahr[7:ncol(ahr)])
+dim(X)
+
+Xlog <- log2(X-min(X)+1)
+X <- Xlog
+
+Y = ahr$LiverDamage
+Z = ahr$Day
+```
+
+#do a pca
+```{r}
+ncomp <- 15
+
+liverdamage <- ahr$LiverDamage
+
+pca.malaria = pca(X, ncomp = ncomp, center = TRUE, scale = TRUE)
+
+plot(pca.malaria, ncomp = ncomp)  # screeplot of the eingenvalues (explained variance per component)
+
+plotIndiv(pca.malaria, group = liverdamage, ind.names = FALSE,  col = c('blue','gray'),
+          legend = TRUE, title = 'PCA on Malaria')
+```
+
+#perform PLS-DA
+
+Class labels are liver damage (high, med, low)
+```{r}
+plsda.malaria <- plsda(X, liverdamage, ncomp = 10)  # set ncomp to 10 for performance assessment later
+```
+
+```{r}
+plotIndiv(plsda.malaria , comp = 1:2,
+          group = liverdamage, ind.names = FALSE,
+          ellipse = TRUE, legend = TRUE, title = 'PLSDA on malaria')
+```
+
+#Use `perf` to evaluate the performance of the fitted PLS-DA
+Note from function documentation that: "BER is appropriate in case of an unbalanced number of samples per class as it calculates the average proportion of wrongly classified samples in each class, weighted by the number of samples in each class. BER is less biased towards majority classes during the performance assessment.""
+```{r}
+# takes a couple of minutes to run
+set.seed(2543) # for reproducibility, only when the `cpus' argument is not used
+perf.plsda.malaria <- perf(plsda.malaria, validation = "loo",
+                  progressBar = FALSE, auc = TRUE)
+
+time <- Sys.time()
+
+#save this
+save(perf.plsda.malaria, file = paste0('/Users/nicole/Desktop/Science/2018_3summer/Stats 366 - Modern Stats for Modern Bio/Assignments/Project/perf.plsda.malaria_', time, '.Rdata'))
+```
+
+#
+```{r}
+load(paste0('/Users/nicole/Desktop/Science/2018_3summer/Stats 366 - Modern Stats for Modern Bio/Assignments/Project/perf.plsda.malaria_', time, '.Rdata'))
+
+# perf.plsda.malaria$error.rate  # error rates
+plot(perf.plsda.malaria, col = color.mixo(5:7), sd = TRUE, legend.position = "vertical")
+#3 or 4 components about right
+```
+
+```{r}
+# run internally and saved
+
+#set.seed(1234) # for reproducibility, only when the `cpus' argument is not used
+# grid of possible keepX values that will be tested for each component
+list.keepX <- c(1:10,  seq(20, 300, 10))
+
+#ncomp selected based on results of the classification error rate plot
+#in the tutorial, authors selected distance and measure (presumably) because it resulted in the lowest error. I selected maxdist based on low error rate. BER and overall error are about the same for high numbers of components.
+
+t1 = proc.time()
+tune.splsda.malaria <- tune.splsda(X, liverdamage, ncomp = 3, validation = 'loo', progressBar = FALSE, test.keepX = list.keepX, cpus = 4)
+
+t2 = proc.time()
+running_time = t2 - t1; running_time # running time
+
+error <- tune.splsda.malaria$error.rate # error rate per component for the keepX grid
+ncomp2 <- tune.splsda.malaria$choice.ncomp$ncomp
+ncomp2 #if null, select 3 (based on PLS-DA earlier)
+ncomp <- 3
+
+time <- Sys.time()
+
+save(tune.splsda.malaria, file =paste0('/Users/nicole/Desktop/Science/2018_3summer/Stats 366 - Modern Stats for Modern Bio/Assignments/Project/tune-malaria-sPLSDA_', time, '.RData'))
+```
+
+```{r}
+#select number of features
+select.keepX <- tune.splsda.malaria$choice.keepX[1:ncomp]
+select.keepX
+
+plot(tune.splsda.malaria, col = color.jet(3)) #error rates quite low between 1 and ~50. going to override select.keepX to 50 to view  maximum number of stable metabolites 
+
+select.keepX[1:3] <- c(50,50,50)
+```
+
+#run the splsda
+```{r}
+splsda.malaria <- splsda(X, liverdamage, ncomp = 4, keepX = select.keepX)
+
+#for some reason, using the 'ggplot2' style with a factor for the group messes up the legend.
+
+plot <- plotIndiv(splsda.malaria, comp = c(1,2),
+          group = liverdamage, ind.names = FALSE,
+          ellipse = TRUE, legend = F, col = c('blue','orange'), pch = c(2,2),
+          title = 'AhR KO v. WT')
+#save as 3x3
+
+plotIndiv(splsda.malaria, comp = c(1,3),
+          group = liverdamage, ind.names = FALSE,
+          ellipse = TRUE, legend = TRUE,
+          title = 'sPLS-DA on malaria, comp 1 & 3')
+
+plotIndiv(splsda.malaria, comp = c(2,3),
+          group = liverdamage, ind.names = FALSE,
+          ellipse = TRUE, legend = TRUE,
+          title = 'sPLS-DA on malaria, comp 2 & 3')
+
+auc.splsda = auroc(splsda.malaria, roc.comp = 1)
+auc.splsda = auroc(splsda.malaria, roc.comp = 3)
+```
+
+```{r}
+set.seed(1)
+set.seed(40) # for reproducibility, only when the `cpus' argument is not used
+# takes about 1 min to run
+perf.malaria <- perf(splsda.malaria, validation = "loo",
+                   dist = 'all', progressBar = FALSE)
+
+# perf.srbct  # lists the different outputs
+perf.malaria$error.rate
+plot(perf.malaria, col = color.mixo(c(5:7)))
+
+#performance is not great unless 3 components are used.
+```
+
+A stability analysis is performed in which stable features are extracted. The analysis is performed using a lasso.
+
+The authors of the package state in Le Cao et al. 2011 that "[40] proposed to keep in the selection only the variables that were selected in all subsamples, whereas [39] proposed to compute a relative selection frequency and keep the most stable variables in the selection. We chose to illustrate the latter option as we believe that the stability frequency, or probability, gives a better understanding of the number of stable discriminative variables that are selected in sPLS-DA."
+
+The result of this is that: "The highly correlated variables will get a higher probability of being selected in each subsample, while the noisy variables will have a probability close to zero."
+
+```{r}
+par(mfrow=c(1,4))
+plot(perf.malaria$features$stable[[1]], type = 'h', ylab = 'Stability',
+     xlab = 'Features', main = 'Comp 1', las =2)
+plot(perf.malaria$features$stable[[2]], type = 'h', ylab = 'Stability',
+     xlab = 'Features', main = 'Comp 2', las =2)
+plot(perf.malaria$features$stable[[3]], type = 'h', ylab = 'Stability',
+     xlab = 'Features', main = 'Comp 3', las =2)
+#plot(perf.malaria$features$stable[[3]], type = 'h', ylab = 'Stability',
+#   xlab = 'Features', main = 'Comp 4', las =2)
+
+par(mfrow=c(1,1))
+```
+
+Lots of stable features in component 1 and a few in the others. 
+
+Le Cao et al. 2011: "We also noticed that once we reached too many dimensions (i.e. close K - 1), then the frequencies of all variables dropped, which clearly showed that sPLS-DA could not distinguish between discriminative variables and noisy variables any more (not shown)."
+
+The axes on those plots are too small for inspection, let's look at a list of the stable ones.
+
+```{r}
+stable1 <- perf.malaria$features$stable[[1]]
+names(stable1)[stable1 > 0.5]
+
+stable2 <- perf.malaria$features$stable[[2]]
+names(stable2)[stable2 > 0.5]
+
+stable3 <- perf.malaria$features$stable[[3]]
+names(stable3)[stable3 > 0.5]
+
+stab1 <- data.frame(stable1,
+                    comp = 1)
+stab2 <- data.frame(stable2,
+                    comp = 2)
+stab3 <- data.frame(stable3,
+                    comp = 3)
+
+#there are many stable features
+
+stab <- rbind(stab1, stab2, stab3)
+
+stab2 <- merge(stab, metab_info, by.x = 'Var1', by.y = 'BIOCHEMICAL.weirdformat', all.x = T)
+
+#write.xlsx(stab2, 'ahr_liverdamage_infonly_splsda_stablevariables.xlsx')
+```
+
+
+```{r, fig.width=12, fig.height=12}
+# here we match the selected variables to the stable features
+ind.match = match(selectVar(splsda.malaria, comp = 1)$name,
+                  names(perf.malaria$features$stable[[1]]))
+#extract the frequency of selection of those selected variables
+Freq = as.numeric(perf.malaria$features$stable[[1]][ind.match])
+
+data.frame(selectVar(splsda.malaria, comp = 1)$value, Freq)
+
+## ------------------------------------------------------------------------
+
+spec_plotLoadings <- function(x){plotLoadings(splsda.malaria, comp = x, title = paste0('Loadings on comp ', x), contrib = 'max', method = 'mean')}
+
+sapply(1:ncomp, spec_plotLoadings)
+```
+
+#combine the metabolites picked out by correlations, sPLS-DA on CAST vs. B6, and sPLS-DA on AhR
+```{r}
+#note that an sPLS-DA on all the strains picks out a lot of the same metabolites as the correlations; if you do a correlation on just B6 vs. CAST, I bet you will identify a similar set as the sPLS on just CAST/B6
+
+#load corrs
+corrStrains <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/correlations_Nicoles data_20200216/all data/healthcorrelations_nicolesdata.xlsx'))
+corr <- corrStrains[corrStrains$Var1 == 'ALT' & corrStrains$R2 >= 0.4,]
+corr <- corr$Var2[is.na(corr$Var2) == F]
+
+#use comp 1 (maybe comps 2 and 3) for strains
+spStrains <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/Michelle/AhR metabolomics data/strains_liverdamage_castb6only_splsda_stablevariables_augment.xlsx'))
+spS <- spStrains[spStrains$comp == 1 & spStrains$Freq >= 0.75,]
+
+#use comp 1 for AhR
+spAhR <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/Michelle/AhR metabolomics data/ahr_liverdamage_infonly_splsda_stablevariables.xlsx'))
+spA <- spAhR[spAhR$comp == 1 & spAhR$Freq >= 0.75,]
+
+a <- intersect(corr, spS$Var1) %>% intersect(spA$Var1) #all
+b <- intersect(corr, spS$Var1) #CAST/B6 sPLS-DA and B6 correlation
+c <- intersect(corr, spA$Var1) #AhR sPLS-DA and B6 correlation
+d <- intersect(spS$Var1, spA$Var1) #AhR and B6 sPLS-DA
+
+e <- c(b,c,d)
+
+library(VennDiagram)
+venn.plot <- venn.diagram(
+	x = list(
+		Corr = corr,
+		sPLS.Strain = spS$Var1,
+		sPLS.AhR = spA$Var1),
+	euler.d = TRUE,
+	scaled = TRUE,
+	category.names = c("Correlation", "CAST v. B6", "KO v. WT"),
+	filename = "/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/figures/tmp.tiff",
+	col=c("#440154ff", '#21908dff', '#fde725ff'),
+          fill = c(alpha("#440154ff",0.3), alpha('#21908dff',0.3), alpha('#fde725ff',0.3)),
+	cat.fontfamily = 'sans',
+	fontfamily = 'sans',
+	cex = 2.5,
+	cat.cex = 2.5,
+	cat.dist = c(0.05, 0.05, 0.05),
+	cat.pos = c(-20, 20, 135))
+
+twoofthree <- data.frame(BIOCHEMICAL.weirdformat = unique(e))
+#write.xlsx(twoofthree, 'liverdamagemetabs.xlsx')
+```
+
