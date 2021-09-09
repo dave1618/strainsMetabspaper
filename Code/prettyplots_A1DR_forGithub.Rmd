@@ -1,0 +1,415 @@
+---
+title: "A1DR"
+author: "Nicole Davis"
+date: "5/30/21"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(gdata)
+library(cowplot)
+library(scales)
+library(stringr)
+library(plyr); library(dplyr)
+library(survival)
+library(ggfortify)
+library(survminer)
+library(readxl)
+library(openxlsx)
+library(reshape2)
+
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+
+theme_set(theme_cowplot(font_size=10)) # reduce default font size
+
+setwd("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/")
+```
+
+
+```{r 3/28/18, echo = FALSE, warning = FALSE, message = FALSE, fig.height = 7.3, fig.width = 6.2}
+# other color options I like to use for strains & DOs: redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy', 'gray')
+#resilience_levels <- c('PWK/PhJ','NOD/ShiLtJ','CAST/EiJ','A/J','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ', 'DO')
+col5 <- c("red","blue","black","red3","red4")
+col3 <- c("red", "purple", "black")
+col2 <- c("red","black")
+
+colors <- col3
+
+df1 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/2020_A1livDR.xlsx", sheet = 'DATA'), stringsAsFactors = F)
+
+df2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/2020_A1livDR.xlsx", sheet = 'DATA_F'), stringsAsFactors = F)
+
+meta <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/2020_A1livDR.xlsx", sheet = 2), stringsAsFactors = F)
+
+df <- rbind(df1, df2)
+df <- merge(df, meta, by.x = 'Mouse.ID', by.y = 'Mouse.ID', sort=FALSE)
+
+df$Infected. <- ifelse(grepl(1, df$Infected.), "Infected", "Uninfected")
+df$Infected. <- factor(df$Infected., levels = c("Infected", "Uninfected"))
+
+df$Mouse.ID2 <- str_replace(df$Mouse.ID, '200912A1livDR.', '')
+
+theme_set(theme_cowplot(font_size = 10))
+
+df <- df %>%
+  group_by(Mouse.ID) %>%
+  mutate(Weight.body.initial = Weight.body[DPI == 0],
+         Weight.body.percentloss = Weight.body / Weight.body.initial)
+
+df$Diet.Treatment <- 'reg. diet'
+df$Diet.Treatment[str_detect(df$Full.Treatment, 'restr.') == T] <- 'diet restr.'
+df$sextreat <- paste0(df$Infected., ' ', df$Sex)
+```
+
+#plot
+```{r}
+bodyweight <- ggplot(df[is.na(df$Weight.body) == F,], (aes(x = DPI, y = Weight.body, color = Treatment, group = Mouse.ID, label = Mouse.ID2))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  labs(x = "Days post infection", y = "Body Weight (g)") +
+  scale_colour_manual(values=colors) +
+  facet_wrap(~sextreat) +
+  theme(legend.position="right", legend.title = element_blank())
+
+bodyweight
+
+bodyweight.change <- ggplot(df[is.na(df$Weight.body) == F,], (aes(x = DPI, y = (Weight.body.percentloss*100)-100, color = Treatment, group = Mouse.ID))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  labs(x = "Days post infection", y = "Weight Loss (%)") +
+  scale_colour_manual(values=c('red','black')) +
+  scale_x_continuous(limits = c(-1, 9)) +
+  facet_wrap(~sextreat) +
+  theme(legend.position="none", legend.title = element_blank())
+
+bodyweight.change
+
+#ggsave('prettyplots_4_weight.pdf', bodyweight.change, units = 'in', height = 3, width = 3, device = 'pdf', useDingbats = F)
+
+water <- ggplot(df[is.na(df$Water.drank) == F,], (aes(x = DPI, y = Water.drank, color = Treatment, group = Mouse.ID, label = Mouse.ID2))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  #geom_text() +
+  labs(x = "Days post infection", y = "Water drank (g)") +
+  scale_colour_manual(values=colors) +
+  facet_wrap(~Sex~Infected.) +
+  theme(legend.position="right", legend.title = element_blank())
+
+water
+
+water.bodyweight <- ggplot(df[is.na(df$Water.drank) == F,], (aes(x = DPI, y = Water.drank/Weight.body, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  #geom_text() +
+  labs(x = "Days post infection", y = "Water drank (g) \nbody weight (g)") +
+  scale_colour_manual(values=colors) +
+  facet_wrap(~Sex~Infected.) +
+  theme(legend.position="right", legend.title = element_blank())
+
+water.bodyweight
+
+food <- ggplot(df[is.na(df$Food.eaten) == F,], (aes(x = DPI, y = Food.eaten, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  #geom_text() +
+  labs(x = "Days post infection", y = "Food eaten (g)") +
+  scale_colour_manual(values=c('red','black')) +
+  scale_x_continuous(limits = c(-1, 9)) +
+  facet_wrap(~sextreat) +
+  theme(legend.position="right", legend.title = element_blank())
+
+food
+food2 <- food + theme(legend.position = 'none')
+
+#ggsave('prettyplots_4_food.pdf', food2, units = 'in', height = 3, width = 3, device = 'pdf', useDingbats = F)
+
+#ggsave('prettyplots_4_food_legend.pdf', food, units = 'in', height = 3, width = 4, device = 'pdf', useDingbats = F)
+
+
+food.bodyweight <- ggplot(df[is.na(df$Food.eaten) == F,], (aes(x = DPI, y = Food.eaten/Weight.body, color = Treatment, group = Mouse.ID))) +
+  geom_line(aes(linetype=Diet.Treatment)) + 
+  labs(x = "Days post infection", y = "Food eaten (g) /\nbody weight (g)") +
+  scale_colour_manual(values=colors) +
+  facet_wrap(~Sex~Infected.) +
+  theme(legend.position="right", legend.title = element_blank())
+
+food.bodyweight
+
+food.water <- ggplot(df[is.na(df$Food.eaten) == F,], (aes(x = Food.eaten, y = Water.drank, color = Treatment))) +
+  geom_point() + 
+  labs(x = "Food eaten (g)", y = "Water drank (g)") +
+  scale_colour_manual(values=colors) +
+  facet_wrap(~Sex~Infected.) +
+  scale_x_continuous(limits = c(NA, 5)) +
+  theme(legend.position="right", legend.title = element_blank())
+
+food.water
+```
+
+#add ALT & Arginase
+```{r}
+alt1 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_A1DRuninf.xlsx'))
+alt2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_A1DR_and_leftovers.xlsx'))
+alt2$experiment <- NULL
+alt3 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_A1DR_maled5-8.xlsx')) #data are yucky for this round, I may be able to get by without it
+alt3$experiment <- NULL
+
+alt1 <- alt1[colnames(alt2)]
+alt <- rbind(alt1, alt2)
+
+
+####
+
+
+arg1 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_A1DRleftovers1.xlsx'))
+arg2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_A1DR_leftovers2.xlsx'))
+arg3 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_A1DR_maled5-8.xlsx'))
+
+arg1 <- arg1[colnames(arg2)]
+arg3 <- arg3[colnames(arg2)]
+
+arg <- rbind(arg1, arg2, arg3)
+
+alt <- alt[c('Mouse.ID','day','ALT.activity','ALT.activity.norm')]
+colnames(alt) <- c('Mouse.ID','DPI','ALT.activity','ALT.activity.norm')
+arg <- arg[c('Mouse.ID','Day','ArgActivity','Norm.touninf')]
+colnames(arg) <- c('Mouse.ID','DPI','ArgActivity','ArgActivity.norm')
+
+alt$Mouse.ID <- str_replace(alt$Mouse.ID, 'A1DR', '200912A1livDR')
+arg$Mouse.ID <- str_replace(arg$Mouse.ID, 'A1DR', '200912A1livDR')
+
+df <- left_join(df, alt) %>% left_join(arg)
+
+#there are arginase repeats...?
+df <- df %>%
+  group_by(Mouse.ID, DPI) %>%
+  mutate(ArgActivity = mean(ArgActivity, na.rm = T),
+         ArgActivity.norm = mean(ArgActivity.norm, na.rm = T))
+```
+
+#plot
+```{r}
+alt.plot <- ggplot(df[is.na(df$ALT.activity) == F,], (aes(x = DPI, y = ALT.activity, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_line() + 
+  geom_point(aes(shape=Sex)) +
+  labs(x = "Days post infection", y = "ALT Activity (U/L)") +
+  scale_colour_manual(values=c('red','black')) +
+  facet_wrap(~Infected.) +
+  theme(legend.position="right", legend.title = element_blank())
+
+alt.plot
+
+arginase.plot <- ggplot(df[is.na(df$ArgActivity.norm) == F,], (aes(x = DPI, y = ArgActivity.norm, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_line() + 
+  geom_point(aes(shape=Sex)) +
+  geom_text() +
+  labs(x = "Days post infection", y = "Arginase Activity\n(umol H2O2 / min. / uL blood)") +
+  scale_colour_manual(values=c('red','black')) +
+  facet_wrap(~Infected., scales = 'fixed') +
+  theme(legend.position="right", legend.title = element_blank())
+
+arginase.plot
+
+alt.arginase.plot <- ggplot(df, (aes(x = ALT.activity, y = ArgActivity, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_point(aes(shape=Sex)) +
+  #geom_text() +
+  labs(x = "ALT (U/L)", y = "Arginase Activity\n(umol H2O2 / min. / uL blood)") +
+  scale_colour_manual(values=c('red','black')) +
+  facet_wrap(~Infected., scales = 'fixed') +
+  theme(legend.position="right", legend.title = element_blank())
+
+alt.arginase.plot
+```
+
+#load & merge arginine data from SUMS
+```{r}
+#sample names sent to SUMS are in 'manifest'
+manifest <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/oct2020/20200930_metabolomics_A1DR_samplemanifest_210518edits.xlsx'))
+
+arg.data1 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/feb2021/022821_calcurve_set1_results.xlsx', sheet = 'ARG'))
+arg.data2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/feb2021/051421_calcurve_set2_results.xlsx', sheet = 'ARG'))
+arg.data3 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/feb2021/021221_calcurve_set3_results.xlsx', sheet = 'ARG'))
+arg.data4 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/feb2021/051721_set4_results.xlsx', sheet = 'ARG'))
+
+#arginine IS may be consumed by arginase. switch to ornithine IS. this may introduce some error, but if that's the case, using ornithine should only accentuate existing patterns.
+renorm <- function(x,int,slope) {
+  x$num <- NULL ; x$Name <- NULL #x is the df with metabolic data
+  x <- merge(manifest, x, by.x = 'Sample.num', by.y = 'Sample.Text') #merge metabolic data w/ sample names
+  arg <- x$IS.Area.ARG[!(is.na(x$IS.Area.ARG)) & x$Infected. == 'n'] #get Arg IS values from uninf. mice
+  orn <- x$IS.Area.ORN[!(is.na(x$IS.Area.ORN)) & x$Infected. == 'n'] #get Orn IS values from uninf. mice
+  ao.lm <- lm(arg ~ orn) #linear regression of ornithine area vs. arginine area
+  m <- ao.lm$coefficients[2] #get slope coefficient
+  b <- ao.lm$coefficients[1] #get y-intercept coefficient
+  x$IS.Area.ARG.renorm <- x$IS.Area.ORN*m+b #calculate "new" arginine area under the curve based on regression
+  x$arginine.response.ORNnorm <- x$Area * (500/x$IS.Area.ARG.renorm) #use Karolina's math from spreadsheet to convert from area to response
+  x$arginine_uM <- (x$arginine.response.ORNnorm-int)/slope*1.03*5/1000 #'int' and 'slope' come from Karolina's standard curves, to convert from response to fmol/ul in extracted sample. 1.03 is a needed dilution factor. '5' is the dilution factor to convert from fmol/ul (ie nM) in extracted sample to nM in plasma sample. '1000' converts nM to micromolar.
+  return(x) #return df containing the "arginine_uM" column that contains the re-normalized values for arginine
+}
+
+a1 <- renorm(arg.data1, 1.11898, 0.18892) ; a1$batch <- 1
+a2 <- renorm(arg.data2, 7.76378, 0.188895)  ; a2$batch <- 2
+a3 <- renorm(arg.data3, 11.1278, 0.0969746) ; a3$batch <- 3
+a4 <- renorm(arg.data4, 15.5436, 0.594587) ; a4$batch <- 4
+  
+manifest <- rbind(a1,a2,a3,a4)
+
+#merge manifest with df
+#don't need the 'infected column' in manifest, that's in the df dataframe
+manifest <- manifest[setdiff(colnames(manifest), 'Infected.')]
+
+df2 <- left_join(df, manifest, by = c('Mouse.ID','DPI')) #should join by 2 columns: "Mouse.ID" & "DPI"
+
+df2 <- df2 %>%
+  group_by(Mouse.ID, DPI) %>%
+  mutate(arginine_uM = mean(arginine_uM, na.rm = T))
+
+df3 <- df2[c('Mouse.ID','DPI','Weight.body','Food.eaten','Infected.','Treatment','Full.Treatment','Diet.Treatment','Sex','sextreat','Mouse.ID2','Weight.body.percentloss','ArgActivity','ArgActivity.norm','ALT.activity','ALT.activity.norm','arginine_uM','batch')]
+
+df3 <- unique(df3) #datafame now has 1 unique entry per mouse per day (rather than 2 replicates of arginine data)
+
+tmp <- df3[is.na(df3$arginine_uM) == F,]
+```
+
+#plot arginine
+```{r}
+arginine.plot <- ggplot(df3[is.na(df3$arginine_uM) == F,], (aes(x = DPI, y = arginine_uM, color = Treatment, group = Mouse.ID, label=Mouse.ID2))) +
+  geom_line() + 
+  geom_point(aes(shape=Sex)) +
+  #geom_text() +
+  labs(x = "Days post infection", y = "Arginine (uM)") +
+  scale_colour_manual(values=c('red','black')) +
+  facet_wrap(~Infected., scales = 'fixed') +
+  theme(legend.position="right", legend.title = element_blank())
+
+arginine.plot
+
+#ggsave('prettyplots_4_A1DR_arginine_indmice.pdf', plot = arginine.plot, units = 'in', width = 6.5, height = 3, useDingbats = F, device = 'pdf')
+
+arginine.arginase.plot <- ggplot(df3[is.na(df3$arginine_uM) == F & df3$Infected. == 'Infected',], (aes(x = ArgActivity.norm, y = log10(arginine_uM)))) +
+  geom_smooth(span=0.9) +
+  geom_point(aes(shape=Sex, color = Treatment)) +
+  labs(x = "Arginase Activity", y = bquote('Arginine (log10'~mu*'M)')) +
+  scale_colour_manual(values=c('red','black')) +
+  #facet_wrap(~Infected., scales = 'fixed') +
+  theme(legend.position="bottom")
+
+arginine.arginase.plot
+arginine.arginase.noleg <- arginine.arginase.plot + theme(legend.position = 'none')
+
+#ggsave('prettyplots_4_A1DR_arginine_vs_arginase_legend.pdf', plot = arginine.arginase.plot, units = 'in', width = 3.25, height = 3, useDingbats = F, device = 'pdf')
+
+#ggsave('prettyplots_4_A1DR_arginine_vs_arginase.pdf', plot = arginine.arginase.noleg, units = 'in', width = 2.5, height = 2, useDingbats = F, device = 'pdf')
+```
+
+#means
+```{r}
+#for ANOVA
+
+##from stats person, only a 2-way comparison e.g. treated/untreated
+#split infected & uninfected, M/F
+#inf
+df3tmp <- unique(df3[c('Mouse.ID','DPI','Infected.','Full.Treatment','Sex','arginine_uM')])
+
+df3.inf <- df3tmp[df3tmp$Infected. == "Infected",]
+df3.inf <- df3.inf[df3.inf$DPI %in% 5:9,]
+df3.inf <- df3.inf[order(df3.inf$DPI, decreasing=FALSE),]
+df3.inf.f <- df3.inf[df3.inf$Sex == 'F',]
+df3.inf.m <- df3.inf[df3.inf$Sex == 'M',]
+
+#uninf
+df3.uninf <- df3tmp[df3tmp$Infected. == "Uninfected",]
+df3.uninf <- df3.uninf[df3.uninf$DPI %in% 5:9,]
+df3.uninf <- df3.uninf[order(df3.uninf$DPI, decreasing=FALSE),]
+df3.uninf.f <- df3.uninf[df3.uninf$Sex == 'F',]
+df3.uninf.f.diet <- df3.uninf.f[df3.uninf.f$Full.Treatment %in% c('GFP + uninf.', 'GFP + uninf. + diet restr.'),]
+df3.uninf.f.ko <- df3.uninf.f[df3.uninf.f$Full.Treatment %in% c('GFP + uninf.', 'Cre + uninf.'),]
+df3.uninf.f.ko.diet <- df3.uninf.f[df3.uninf.f$Full.Treatment %in% c('GFP + uninf.', 'Cre + uninf. + diet restr.'),]
+df3.uninf.m <- df3.uninf[df3.uninf$Sex == 'M',]
+df3.uninf.m.diet <- df3.uninf.m[df3.uninf.m$Full.Treatment %in% c('GFP + uninf.', 'GFP + uninf. + diet restr.'),]
+df3.uninf.m.ko <- df3.uninf.m[df3.uninf.m$Full.Treatment %in% c('GFP + uninf.', 'Cre + uninf.'),]
+df3.uninf.m.ko.diet <- df3.uninf.m[df3.uninf.m$Full.Treatment %in% c('GFP + uninf.', 'Cre + uninf. + diet restr.'),]
+
+#small function to speed things up
+get.labs <- function(x){
+  p <- sapply(unique(x$DPI), FUN = function(day) {
+ dayAnova <- aov(arginine_uM ~ Full.Treatment, data = x[x$DPI == day,]) # fit the anova
+ summary(dayAnova)[[1]][1,5] # get p-values
+})
+  p2 <- as.character(cut(p, breaks=c(0, .05, 1), labels=c("*", "")))
+  return(p2)
+}
+
+inf.f <- get.labs(df3.inf.f)
+inf.m <- get.labs(df3.inf.m)
+uninf.f.diet <- get.labs(df3.uninf.f.diet)
+uninf.f.ko <- get.labs(df3.uninf.f.ko)
+uninf.f.ko.diet <- get.labs(df3.uninf.f.ko.diet)
+
+inf.m <- get.labs(df3.inf.m)
+uninf.m.diet <- get.labs(df3.uninf.m.diet[df3.uninf.m.diet$DPI < 9,]) #only two datapoints for d9, one treated and one not, throws an error if you include day 9
+uninf.m.diet[5] <- ''
+uninf.m.ko <- get.labs(df3.uninf.m.ko)
+uninf.m.ko.diet <- get.labs(df3.uninf.m.ko.diet)
+
+#make labs df
+lab.df <- data.frame(rbind(inf.f,uninf.f.diet,uninf.f.ko,uninf.f.ko.diet,
+                           inf.m,uninf.m.diet,uninf.m.ko,uninf.m.ko.diet))
+lab.df$Sex <- c(rep('F',4), rep('M',4))
+lab.df$sextreat <- c('Infected F','Uninfected F','Uninfected F','Uninfected F','Infected M','Uninfected M','Uninfected M','Uninfected M')
+lab.df$Treatment <- c('Cre','GFP','Cre','Cre','Cre','GFP','Cre','Cre')
+lab.df$Diet.Treatment <- c('reg. diet','diet restr.','reg. diet','diet restr.','reg. diet','diet restr.','reg. diet','diet restr.')
+lab.df <- melt(lab.df, id.vars = c('Sex','Treatment','Diet.Treatment','sextreat'), variable.name = 'DPI', value.name='lab')
+lab.df$DPI <- as.numeric(str_replace(lab.df$DPI, 'X','')) + 4
+lab.df$lab[lab.df$lab == '*' & lab.df$Diet.Treatment == 'diet restr.'] <- '#'
+lab.df$y <- 240
+lab.df$y[lab.df$Sex == 'M' & lab.df$Diet.Treatment == 'reg. diet'] <- 275
+
+df.sum <- df3 %>%
+  group_by(DPI,Full.Treatment,sextreat) %>%
+  mutate(arginine.mean = mean(arginine_uM, na.rm=T),
+         arginine.SE = ste(arginine_uM, na.rm=T))
+
+df.sum <- df.sum[df.sum$DPI >= 5,]
+
+df.sum$Diet.Treatment <- 'reg. diet'
+df.sum$Diet.Treatment[str_detect(df.sum$Full.Treatment, 'restr.') == T] <- 'diet restr.'
+
+arginine.mean.plot <- ggplot(df.sum[df.sum$Sex == 'F',], aes(x=DPI, y=arginine.mean, color=Treatment))
+arg.mean.plot <- arginine.mean.plot + 
+  geom_point() +
+  geom_text(data=lab.df[lab.df$Sex == 'F',], aes(x=DPI, y=y, label=lab)) +
+  geom_line(aes(group=interaction(Sex,Full.Treatment), linetype=Diet.Treatment)) +
+  scale_color_manual(values = c('red','black')) +
+  labs(y='Arginine ('~mu*'M )') +
+  geom_errorbar(aes(ymax = arginine.mean + arginine.SE, ymin = arginine.mean - arginine.SE, width = 0.2)) +
+  facet_wrap(~sextreat) +
+  theme(legend.position = 'none') +
+  scale_y_continuous(limits = c(NA,250))
+arg.mean.plot
+
+ggsave('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/_mBio resubmission/figures/prettyplots_4_A1DR_arginine_treatments_female.pdf', plot = arg.mean.plot, units = 'in', width = 3, height = 1.5, useDingbats = F, device = 'pdf')
+
+arginine.mean.plot <- ggplot(df.sum[df.sum$Sex == 'M',], aes(x=DPI, y=arginine.mean, color=Treatment))
+arg.mean.plot <- arginine.mean.plot + 
+  geom_point() +
+  geom_text(data=lab.df[lab.df$Sex == 'M',], aes(x=DPI, y=y, label=lab)) +
+  geom_line(aes(group=interaction(Sex,Full.Treatment), linetype=Diet.Treatment)) +
+  scale_color_manual(values = c('red','black')) +
+  labs(y='Arginine ('~mu*'M )', linetype = 'Diet') +
+  geom_errorbar(aes(ymax = arginine.mean + arginine.SE, ymin = arginine.mean - arginine.SE, width = 0.2)) +
+  facet_wrap(~sextreat)
+arg.mean.plot
+
+arg.mean.plot2 <- arg.mean.plot +
+  theme(legend.position = 'none')
+
+ggsave('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/_mBio resubmission/figures/prettyplots_4_A1DR_arginine_treatments_male.pdf', plot = arg.mean.plot2, units = 'in', width = 3, height = 1.5, useDingbats = F, device = 'pdf')
+
+ggsave('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/_mBio resubmission/figures/prettyplots_4_A1DR_arginine_treatments_legend.pdf', plot = arg.mean.plot, units = 'in', width = 3, height = 1.5, useDingbats = F, device = 'pdf')
+```
+
+

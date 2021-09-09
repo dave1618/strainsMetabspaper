@@ -1,0 +1,245 @@
+---
+title: "TDO2 inhibitor 680C91"
+author: "Michelle Lissner"
+date: "12/18/2017"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(gdata)
+library(cowplot)
+library(scales)
+library(stringr)
+library(plyr); library(dplyr)
+library(survival)
+library(ggfortify)
+library(survminer)
+library(reshape2)
+library(readxl)
+library(openxlsx)
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+theme_set(theme_cowplot(font_size=10)) # reduce default font size
+
+setwd("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/R/")
+```
+
+```{r 3/28/18, echo = FALSE, warning = FALSE, message = FALSE, fig.height = 7.3, fig.width = 6.2}
+df <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/200310appendedArg1liv3.xlsx", sheet=1))
+
+meta <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/200310appendedArg1liv3.xlsx", sheet = 2))
+
+df <- left_join(df, meta)
+df <- unique(df) #for some reason, both merge & left_join make duplicate rows ...?
+df$Mouse.Genotype[df$Mouse.Genotype == 'Wildtype'] <- 'WT'
+
+unique(df$Experiment)
+exps <- c("200310Arg1liv3")
+
+df <- df[df$Experiment %in% exps,]
+
+df$Infected. <- ifelse(grepl(1, df$Infected.), "Infected", "Uninfected")
+df$Infected. <- factor(df$Infected., levels = c("Infected", "Uninfected"))
+
+col4 <- c("blue", "firebrick3", "red", "pink")
+col3 <- c("black", "red","blue")
+col2 <- c("blue","black")
+col2 <- c("red", "black")
+
+colors <- col4
+
+#df2 <- left_join(df, bunalt) #left_join doesn't work for some reason
+
+df$Lived.[df$Lived. == "0.0"] <- 'Died'
+df$Lived.[df$Lived. == "1.0"] <- 'Lived'
+
+#import ALT and arginase
+ALT <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/ALT/ALT_results_A1DR_and_leftovers.xlsx')
+Arg <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_A1DRleftovers1.xlsx')
+
+#select just what you need
+ALT <- ALT[c('Mouse.ID','day','ALT.activity')]
+Arg <- Arg[c('Mouse.ID','Day','ArgActivity')]
+
+colnames(Arg)[2] <- 'DPI'
+colnames(ALT)[2] <- 'DPI'
+
+#now... left join?
+
+df.tmp <- left_join(df, ALT) %>% left_join(Arg)
+df <- df.tmp
+#think that's alright
+
+df$Treatment <- factor(df$Treatment, levels = rev(c('GFP','TBG-Cre low','TBG-Cre med','TBG-Cre high')))
+df <- df[df$DPI >= 0,]
+
+df$lethal_yn <- 'lethal'
+df$lethal_yn[df$Treatment %in% c('GFP','TBG-Cre low')] <- 'non-lethal'
+df$lethal_yn <- factor(df$lethal_yn, levels = c('non-lethal','lethal'))
+```
+
+#ALT and arginase plots
+```{r}
+#all data are infected, so no need to remove uninfected.
+gg <- ggplot(df, aes(x=lethal_yn, y=ALT.activity, color=Treatment, label=Mouse.ID))
+gg + 
+  geom_jitter(width=0.2) +
+  scale_color_manual(values = c('goldenrod','forestgreen','dodgerblue1','dodgerblue4'))
+
+gg <- ggplot(df, aes(x=lethal_yn, y=ArgActivity, color=Treatment, label=Mouse.ID))
+gg + 
+  geom_jitter(width=0.2) +
+  scale_x_discrete(labels = c('GFP/low', 'med/high')) +
+  scale_color_manual(values = c('goldenrod','forestgreen','dodgerblue1','dodgerblue4')) +
+  labs(x='', y='Arginase Activity\n(umol H2O2 / min. / uL blood)')
+
+gg <- ggplot(df, aes(x=Treatment, y=ArgActivity, color=Treatment, label=Mouse.ID))
+tbgdose_arginase <- gg + 
+  geom_jitter(width=0.2) +
+  scale_x_discrete(labels = rev(c('GFP','low','med','high'))) +
+  scale_color_manual(values = rev(c('goldenrod','forestgreen','dodgerblue1','dodgerblue4'))) +
+  labs(x='', y='Arginase Activity') +
+  theme(legend.position = 'none')
+tbgdose_arginase
+
+#ggsave('prettyplots_4_arginase_TBGdose.pdf', plot=tbgdose_arginase, units = 'in', width = 1.75, height = 2, useDingbats = F, device = 'pdf')
+```
+
+#metabolic data
+```{r}
+metab.meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/Davis June 2020 - SUMS sample manifest.xlsx', sheet= 'manifest'))
+metab.meta$Sample <- as.character(metab.meta$Sample)
+
+arg <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'ARG'))
+orn <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'ORN'))
+cit <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'CIT'))
+phe <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'PHE'))
+put <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'PUT'))
+spe <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'SPER'))
+adma <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'ADMA'))
+spd <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'SPD'))
+glut <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'GLUT'))
+msg <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'MSG'))
+pro <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Metabolomics/SUMS/jul2020/071320_results_concat.xlsx', sheet= 'PRO'))
+
+arg <- arg[c('Sample.Text','fmol.ul')]
+arg.little <- arg %>%
+  group_by(Sample.Text) %>%
+  transmute(ARG.mean.fM = mean(fmol.ul, na.rm=T),
+            ARG.mean = ARG.mean.fM * 5 / 1000) %>%
+  unique()
+
+orn <- orn[c('Sample.Text','fmol.ul')]
+orn.little <- orn %>%
+  group_by(Sample.Text) %>%
+  transmute(ORN.mean.fM = mean(fmol.ul, na.rm=T),
+            ORN.mean = ORN.mean.fM * 5 / 1000) %>%
+  unique()
+
+cit <- cit[c('Sample.Text','fmol.ul')]
+cit.little <- cit %>%
+  group_by(Sample.Text) %>%
+  transmute(CIT.mean.fM = mean(fmol.ul, na.rm=T),
+            CIT.mean = CIT.mean.fM * 5 / 1000) %>%
+  unique()
+
+phe <- phe[c('Sample.Text','fmol.ul')]
+phe.little <- phe %>%
+  group_by(Sample.Text) %>%
+  transmute(PHE.mean.fM = mean(fmol.ul, na.rm=T),
+            PHE.mean = PHE.mean.fM * 5 / 1000) %>%
+  unique()
+
+put <- put[c('Sample.Text','fmol.ul')]
+put.little <- put %>%
+  group_by(Sample.Text) %>%
+  transmute(PUT.mean.fM = mean(fmol.ul, na.rm=T),
+            PUT.mean = PUT.mean.fM * 5 / 1000) %>%
+  unique()
+
+spe <- spe[c('Sample.Text','fmol.ul')]
+spe.little <- spe %>%
+  group_by(Sample.Text) %>%
+  transmute(SPE.mean.fM = mean(fmol.ul, na.rm=T),
+            SPE.mean = SPE.mean.fM * 5 / 1000) %>%
+  unique()
+
+adma <- adma[c('Sample.Text','fmol.ul')]
+adma.little <- adma %>%
+  group_by(Sample.Text) %>%
+  transmute(ADMA.mean.fM = mean(fmol.ul, na.rm=T),
+            ADMA.mean = ADMA.mean.fM * 5 / 1000) %>%
+  unique()
+
+spd <- spd[c('Sample.Text','fmol.ul')]
+spd.little <- spd %>%
+  group_by(Sample.Text) %>%
+  transmute(SPD.mean.fM = mean(fmol.ul, na.rm=T),
+            SPD.mean = SPD.mean.fM * 5 / 1000) %>%
+  unique()
+
+glut <- glut[c('Sample.Text','fmol.ul')]
+glut.little <- glut %>%
+  group_by(Sample.Text) %>%
+  transmute(GLUT.mean.fM = mean(fmol.ul, na.rm=T),
+            GLUT.mean = GLUT.mean.fM * 5 / 1000) %>%
+  unique()
+
+msg <- msg[c('Sample.Text','fmol.ul')]
+msg.little <- msg %>%
+  group_by(Sample.Text) %>%
+  transmute(MSG.mean.fM = mean(fmol.ul, na.rm=T),
+            MSG.mean = MSG.mean.fM * 5 / 1000) %>%
+  unique()
+
+pro <- pro[c('Sample.Text','fmol.ul')]
+pro.little <- pro %>%
+  group_by(Sample.Text) %>%
+  transmute(PRO.mean.fM = mean(fmol.ul, na.rm=T),
+            PRO.mean = PRO.mean.fM * 5 / 1000) %>%
+  unique()
+
+
+metab.meta <- merge(metab.meta, arg.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, orn.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, cit.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, phe.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, put.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, spe.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, adma.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, spd.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, glut.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, msg.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+metab.meta <- merge(metab.meta, pro.little, by.x = 'Sample', by.y = 'Sample.Text', all.x = T)
+
+meta2 <- merge(meta, metab.meta, by.x = 'Mouse.ID', by.y = 'Mouse.ID', all.x=F)
+meta2$Treatment <- factor(meta2$Treatment, levels = c('GFP','TBG-Cre low','TBG-Cre med', 'TBG-Cre high'))
+meta2$Infected. <- ifelse(meta2$Infected. == 1, yes = 'I', no = 'UI')
+meta2$Infected. <-  factor(meta2$Infected., levels = c('UI', 'I'))
+
+gg <- ggplot(meta2[meta2$Infected. == 'UI',], aes(x=DPI, y=ARG.mean, color=Treatment))
+arg.time <- gg +
+  geom_line(aes(group=Mouse.ID)) +
+  scale_color_manual(values = c('goldenrod','forestgreen','dodgerblue1','dodgerblue4')) +
+  #facet_wrap(~Treatment, nrow=1) +
+  labs(y='Plasma arginine (uM)') +
+  geom_point()
+arg.time
+
+gg <- ggplot(meta2[meta2$Infected. == 'UI',], aes(x=DPI, y=ORN.mean, color=Treatment))
+orn.time <- gg + facet_wrap(~Infected.) + 
+  geom_line(aes(group=Mouse.ID)) +
+  facet_wrap(~Treatment, nrow=1) +
+  labs(y='Plasma ornithine (uM)') +
+  geom_point()
+
+#ggsave('prettyplots_arginine_TBGovertime.pdf', arg.time) #this is for supplement
+```

@@ -1,0 +1,281 @@
+---
+title: "Arg2cross1and2"
+author: "Nicole Davis"
+date: "7/17/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#prepare workspace
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(gdata)
+library(cowplot)
+library(scales)
+library(stringr)
+library(openxlsx)
+library(plyr); library(dplyr)
+library(survival)
+library(ggfortify)
+library(survminer)
+library(readxl)
+library(reshape2)
+ste <- function(x, na.rm = TRUE){
+  if(na.rm==TRUE){
+    x <- x[!is.na(x)] 
+    sd(x, na.rm = TRUE)/sqrt(length(x))}
+  else if(na.rm==FALSE){
+    sd(x, na.rm = FALSE)/sqrt(length(x))}
+}
+theme_set(theme_cowplot(font_size=10)) # reduce default font size
+
+setwd("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arg2/")
+
+col2 <- c('red','black')
+```
+
+#load Arg2 data
+```{r}
+data1vsc <- read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arg2/Arg2cross1and2_liverenzymes_buncreat.xlsx', sheet=1)
+
+metadata1vsc <- read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arg2/Arg2cross1and2_liverenzymes_buncreat.xlsx', sheet=2)
+
+df1vsc <- merge(data1vsc, metadata1vsc, by.x = 'Sample.ID', by.y = 'Sample.ID')
+df1vsc <- df1vsc[df1vsc$Experiment != "190626ArgTekcross1",]
+
+####2nd round, to go with the arginase activity stuff####
+data2vsc <- read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/UreaCycle1_Arg2cross1and2_liverenzymes_buncreat.xlsx', sheet=1)
+
+metadata2vsc <- read_xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/UreaCycle1_Arg2cross1and2_liverenzymes_buncreat.xlsx', sheet=2)
+
+df2vsc <- merge(data2vsc, metadata2vsc, by.x = 'Sample.ID', by.y = 'Sample.ID')
+df2vsc <- df2vsc[df2vsc$Experiment != "190725UreaCycle1",]
+df2vsc$TestNum <- NULL ; df2vsc$TestNotes <- NULL
+
+df1vsc$study <- 1 ; df2vsc$study <- 2
+df <- rbind(df1vsc, df2vsc)
+
+###############long data, Arg2cross1##############
+df2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190429appendedArg2cross1.xlsx"))
+
+meta2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190429appendedArg2cross1.xlsx", sheet = 2))
+
+df2 <- left_join(df2, meta2)
+df2 <- unique(df2) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+
+###############long data, Arg2cross2##############
+df3 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190618appendedArg2cross2.xlsx"))
+
+meta3 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/190618appendedArg2cross2.xlsx", sheet = 2))
+
+df3 <- left_join(df3, meta3)
+df3 <- unique(df3) #for some reason, both merge & left_join make duplicate rows ...?
+##################################################
+
+df2$Date.of.arrival.at.Stanford <- NULL
+df2$Date.of.birth <- NULL
+df3$Date.of.arrival.at.Stanford <- NULL
+df3$Date.of.birth <- NULL
+
+df2 <- rbind(df2, df3) #if they won't bind, remove the dates columns; can throw a POSIX related error, think if they aren't formatted properly.
+
+
+df2$Mouse.Genotype[df2$Mouse.Genotype == 'Wildtype'] <- 'WT'
+#later in this script, I merge it all together
+```
+
+#subset
+```{r}
+df <- df[df$Test %in% c('AST','ALT','BUN','Creatinine'),]
+df$Result <- as.numeric(as.character(df$Result))
+```
+
+```{r}
+colkeeps <- c('Mouse.ID','Genotype','infected_yn','day','Test','Result','study')
+df.tmp <- df[colkeeps]
+df.wide <- dcast(df.tmp, Genotype + infected_yn + day + Mouse.ID + study ~ Test, value.var='Result')
+
+#change zeroes to the non-zero minimum
+df.wide$Creatinine[df.wide$Creatinine == 0] <- min(df.wide$Creatinine[df.wide$Creatinine !=0], na.rm=T)
+
+#now that the BUN/creatinine and liver data are in wide format, merge with the longitudinal data
+df.all <- data.frame(merge(df.wide, df2, by.x = 'Mouse.ID', by.y = 'Mouse.ID', all.y = T))
+df.all$Temperature <- as.numeric(as.character(df.all$Temperature))
+df.all$AST <- as.numeric(as.character(df.all$AST))
+```
+
+#add arginase activity
+```{r}
+ArgAct <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arg2/Arg2extras_ArgActivity.xlsx')
+
+ArgAct2 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Arg2/Arg2_argactivity.xlsx')
+
+ArgAct <- rbind(ArgAct, ArgAct2)
+
+#correct to uninfected control
+ArgAct$ArgActivity <- ArgAct$ArgActivity - ArgAct$ArgActivity[ArgAct$Mouse.ID == 'uninfected serum']
+
+keeps <- c('Mouse.ID','ArgActivity')
+ArgActTmp <- ArgAct[keeps]
+
+df.all <- merge(df.all, ArgActTmp, by.x = 'Mouse.ID', by.y = 'Mouse.ID', all.y = F) #change all.y to T and regenerate df.all to look at the fake data
+df.all$Mouse.Genotype[df.all$Mouse.ID == '190618Arg2cross2.80.fake'] <- "Arg2-/-"
+df.all$Infected.[df.all$Mouse.ID == '190618Arg2cross2.80.fake'] <- 1
+tmp <- unique(df.all$ALT[df.all$Mouse.ID == '190618Arg2cross2.80'])
+df.all$ALT[df.all$Mouse.ID == '190618Arg2cross2.80.fake'] <- tmp
+
+#just ArgAct
+tmp <- unique(df.all[c('Mouse.ID','Mouse.Genotype','ArgActivity','Infected.')])
+
+gg <- ggplot(tmp, aes(x=interaction(Infected.,Mouse.Genotype), y=ArgActivity, color=Mouse.Genotype))
+gg + 
+  geom_jitter(width=0.2, height=0) +
+  scale_color_manual(values = c('red','black'))
+```
+
+#load the ArgTek data
+```{r}
+ArgAct2 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_paperBatch4.xlsx')
+
+#correct to neg control
+ArgAct2$ArgActivity <- ArgAct2$ArgActivity - ArgAct2$ArgActivity[ArgAct2$Mouse.ID == 'neg_1.0']
+
+#keep just the Tek animals
+ArgAct2 <- ArgAct2[ArgAct2$experiment %in% c('ATC2','Tek uninf.'),]
+
+#add inf/uninf info
+ArgAct2$Infected. <- 0
+ArgAct2$Infected.[ArgAct2$experiment == 'ATC2'] <- 1
+
+#subset to needed columns
+ArgAct2 <- ArgAct2[c('Mouse.ID','Mouse.Genotype','ArgActivity','Infected.')]
+```
+
+#load the Arg1liver data
+```{r}
+meta <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/200116appendedArg1liv2.xlsx", sheet = 2))
+meta2 <- data.frame(read_xlsx("/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/raw data/191204appendedArg1liv1.xlsx", sheet = 2))
+
+datecols <- colnames(meta)[str_detect(colnames(meta), 'Date') == T]
+
+meta <- meta[!(colnames(meta) %in% datecols)]
+meta2 <- meta2[!(colnames(meta2) %in% datecols)]
+
+meta <- rbind(meta, meta2)
+
+Arg1 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_Arg1liv1.1.xlsx')
+Arg2 <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Arginine/Argactivity_Arg1liv1.2.xlsx')
+Arg1 <- Arg1[c('Mouse.ID','day','ArgActivity')]
+Arg2 <- Arg2[c('Mouse.ID','day','ArgActivity')]
+Arg1$ArgActivity <- Arg1$ArgActivity - Arg1$ArgActivity[Arg1$Mouse.ID == 'neg']
+Arg2$ArgActivity <- Arg2$ArgActivity - Arg2$ArgActivity[Arg2$Mouse.ID == 'neg']
+
+Arg <- rbind(Arg1, Arg2)
+
+liv <- left_join(Arg, meta)
+liv$Mouse.Genotype <- paste0(liv$Mouse.Genotype, ' ; ', liv$Treatment)
+liv <- liv[c('Mouse.ID','Mouse.Genotype','ArgActivity','Infected.')]
+liv <- liv[!(liv$Mouse.ID %in% c('pos','neg')),]
+
+#combine data frames
+tmp2 <- rbind(tmp, ArgAct2)
+tmp3 <- rbind(tmp2, liv)
+
+tmp3$Mouse.Genotype <- str_replace(tmp3$Mouse.Genotype, 'flox/flox', 'fl/fl')
+
+geno.order <- c('WT','Arg2-/-', 'Arg1 fl/fl ; Tek +/+','Arg1 fl/fl ; Tek cre/+', 'Arg1 fl/fl ; GFP','Arg1 fl/fl ; TBG-Cre')
+tmp3$Mouse.Genotype <- factor(tmp3$Mouse.Genotype, levels = geno.order)
+tmp3$Infected. <- ifelse(tmp3$Infected. == 1, yes = 'Infected', no = 'Uninfected')
+tmp3$Infected. <- factor(tmp3$Infected., levels = c('Uninfected','Infected'))
+
+gg <- ggplot(tmp3, aes(x=(Mouse.Genotype), y=ArgActivity, color=Mouse.Genotype))
+gg + 
+  geom_jitter(width=0.2, height=0) +
+  facet_wrap(~Infected.) +
+  scale_color_manual(values=c('firebrick3','firebrick1','darkgoldenrod3','darkgoldenrod1','dodgerblue3','dodgerblue1')) +
+  theme(axis.text.x = element_text(color = 'white', angle=45, hjust=1)) + 
+  labs(x = '', y = 'Arginase Activity', color = 'Mouse Genotype')
+
+tmp3$geno <- 'WT'
+tmp3$geno[tmp3$Mouse.Genotype %in% c('Arg2-/-', 'Arg1 fl/fl ; TBG-Cre', 'Arg1 fl/fl ; Tek cre/+')] <- 'KO'
+tmp3$Gene <- 'Arg2'
+tmp3$Gene[tmp3$Experiment == 2] <- 'Arg1 fl/fl ; Tek-cre'
+tmp3$Gene[tmp3$Experiment == 3] <- 'Arg1 fl/fl ; TBG-cre'
+tmp3$Gene <- factor(tmp3$Gene, levels = c('Arg2', 'Arg1 fl/fl ; Tek-cre', 'Arg1 fl/fl ; TBG-cre'))
+
+tmp3$Genotype <- tmp3$Mouse.Genotype
+tmp3$Genotype[tmp3$geno == 'WT'] <- 'WT'
+
+gg <- ggplot(tmp3, aes(x=Mouse.Genotype, y=ArgActivity, shape=Gene, color = Genotype))
+gg + 
+  geom_jitter(width=0.2, height=0) +
+  facet_wrap(~Infected.) +
+  scale_color_manual(values=c('gray','blue','darkorange','red')) +
+  theme(axis.text.x = element_text(color = 'white', angle=45, hjust=1)) + 
+  labs(x = '', y = 'Arginase Activity', color = 'Mouse Genotype', shape = 'Gene of interest')
+
+tmp3$Mouse.Genotype.label <- as.character(tmp3$Mouse.Genotype)
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'Arg1 fl/fl ; GFP'] <- 'Arg1 fl/fl ; TBG-GFP'
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'Arg1 fl/fl ; TBG-Cre'] <- 'Arg1 fl/fl ; TBG-Cre'
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'Arg2-/-'] <- 'Arg2 -/-'
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'WT'] <- 'Arg2 +/+'
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'Arg1 flox/flox ; Tek +/+'] <- 'Arg1 fl/fl ; Tek +/+'
+tmp3$Mouse.Genotype.label[tmp3$Mouse.Genotype == 'Arg1 flox/flox ; Tek cre/+'] <- 'Arg1 fl/fl ; Tek cre/+'
+tmp3$Mouse.Genotype.label <- factor(tmp3$Mouse.Genotype.label, levels = c('Arg1 fl/fl ; TBG-Cre','Arg1 fl/fl ; TBG-GFP','Arg1 fl/fl ; Tek cre/+','Arg1 fl/fl ; Tek +/+','Arg2 -/-','Arg2 +/+'))
+
+gg <- ggscatter(tmp3, x='Mouse.Genotype.label', y='ArgActivity', color = 'white', ggtheme = theme_cowplot(font_size = 10))
+arginase_stats <- gg + 
+  facet_wrap(~Infected.) +
+  scale_y_continuous(limits = c(NA, 1.5)) +
+  geom_jitter(width=0.2, aes(color=Mouse.Genotype.label)) +
+  scale_color_manual(values = c('red','gray','darkorange','gray','blue','gray')) +
+  labs(x='', y='Arginase Activity') +
+  theme(legend.position = 'bottom', legend.title = element_blank(), legend.justification = 'left', axis.text.x = element_blank()) +
+  guides(color=guide_legend(ncol=3)) +
+  #uninfected brackets
+  geom_bracket(data = tmp3[tmp3$Infected == 'Uninfected',], 
+               xmin = "Arg2 -/-", xmax = "Arg2 +/+", 
+               y.position = 1.4, label = "ns", label.size = 3) +
+  geom_bracket(data = tmp3[tmp3$Infected == 'Uninfected',], 
+               xmin = "Arg1 fl/fl ; Tek cre/+", xmax = "Arg1 fl/fl ; Tek +/+", 
+               y.position = 1.4, label = "ns", label.size = 3) +
+  geom_bracket(data = tmp3[tmp3$Infected == 'Uninfected',], 
+               xmin = "Arg1 fl/fl ; TBG-Cre", xmax = "Arg1 fl/fl ; TBG-GFP",
+               y.position = 1.4, label = "ns", label.size = 3) +
+  
+  #infected brackets
+  geom_bracket(data = tmp3[tmp3$Infected == 'Infected',], 
+               xmin = "Arg2 -/-", xmax = "Arg2 +/+", 
+               y.position = 1.4, label = "ns", label.size = 3) + 
+  geom_bracket(data = tmp3[tmp3$Infected == 'Infected',], 
+               xmin = "Arg1 fl/fl ; Tek cre/+", xmax = "Arg1 fl/fl ; Tek +/+", 
+               y.position = 1.4, label = "ns", label.size = 3) + 
+  geom_bracket(data = tmp3[tmp3$Infected == 'Infected',], 
+               xmin = "Arg1 fl/fl ; TBG-Cre", xmax = "Arg1 fl/fl ; TBG-GFP",
+               y.position = 1.4, label = "*", label.size = 3)
+#save as 6 x 3
+
+arginase_stats
+
+#ggsave('prettyplots_4_arginasestats.pdf', arginase_stats, units = 'in', height = 2, width = 3.5, device = 'pdf', useDingbats = F)
+
+#ggsave('prettyplots_4_arginasestats_legend.pdf', arginase_stats, units = 'in', height = 2.5, width = 5, device = 'pdf', useDingbats = F) #any smaller than ~5 width and the legend gets cut off
+
+#stats
+liv.inf <- liv[liv$Infected. == 1,]
+liv.tbg <- liv.inf$ArgActivity[liv.inf$Mouse.Genotype == "Arg1 fl/fl ; TBG-Cre"]
+liv.gfp <- liv.inf$ArgActivity[liv.inf$Mouse.Genotype != "Arg1 fl/fl ; TBG-Cre"]
+
+#wilcoxon
+wilcox.test(liv.inf$ArgActivity~liv.inf$Mouse.Genotype)
+kruskal.test(liv.inf$ArgActivity~liv.inf$Mouse.Genotype)
+
+#t-test
+t.test(liv.tbg, liv.gfp)
+wilcox.test(liv.tbg, liv.gfp)
+```
+
