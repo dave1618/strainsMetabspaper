@@ -1,0 +1,661 @@
+---
+title: "StrainsMetabolites_datasetcomparison"
+author: "Nicole Davis"
+date: "7/3/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#setup
+```{r}
+library(dplyr)
+library(stringr)
+library(openxlsx)
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(igraph)
+library(cowplot)
+
+#load additional packages for heatmaps
+library(ComplexHeatmap)
+library(circlize)
+
+setwd('/Users/nicole/Desktop/Science/Schneider Lab/Proposals, presentations, meetings/_Nicole/Papers/_Strains paper/figures/')
+
+theme_set(theme_cowplot(font_size = 10))
+
+redbluePalette <- c('red1','royalblue2')
+redbluePalette.long <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+redbluePalette.long_inv <- rev(redbluePalette)
+resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ') #this is determined based on what proportion of animals survive infection, on average
+resilience_levels_inv <- rev(resilience_levels) #this is determined based on what proportion of animals survive infection, on average
+
+redbluePalette.long.human <- c('yellow','orange','red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy')
+```
+
+#load datasets
+```{r}
+######load metabolite info######
+metab_info <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/Metabolon/StrainsMetabs_metabolite_info.xlsx')
+
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/BIOCHEMICALS.match.Rdata')
+
+metab_info <- merge(metab_info, BIOCHEMICALS.match, by.x = 'BIOCHEMICAL', by.y = 'BIOCHEMICAL')
+metab_info <- metab_info[order(metab_info$SUPER.PATHWAY, metab_info$SUB.PATHWAY),]
+###############################
+
+#remove bile acids, which are all over the place and shouldn't be present in reliable amounts in plasma anyway.
+#also remove chemicals and drugs like EDTA and possibly medications.
+metabs_rm1 <- metab_info$BIOCHEMICAL.weirdformat[metab_info$SUB.PATHWAY %in% c('Primary Bile Acid Metabolism','Secondary Bile Acid Metabolism', 'Chemical', 'Drug - Topical Agents')]
+
+#notzeroesDavis is any metabolite that didn't have just zeroes in the Thai data && is found in my data.
+load('/Users/nicole/Desktop/notzeroesDavis.Rdata') #there are not a lot of these...
+notzeroesDavis
+```
+
+#load strainsMetabs data (fold-change)
+```{r}
+strainsMetabs <- read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data_fc.xlsx')
+
+#the Strain variable is a cumbersome label, replace with something more readable
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'C57BL/6', 'BL6')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'PWK/PhJ', 'PWK')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'NOD/ShiLtJ', 'NOD')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'CAST/EiJ', 'CAST')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'A/J', 'AJ')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'NZO/HILtJ', 'NZO')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, '129S1/SvImJ', '129')
+strainsMetabs$Strain <- str_replace(strainsMetabs$Strain, 'WSB/EiJ', 'WSB')
+
+#### list of everything measured ####
+load('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/ParametersMeasured.Rdata')
+physcols <- mlist[[1]]
+flowcols <- mlist[[2]]
+livercols <- mlist[[3]]
+cytocols <- mlist[[4]]
+metabcols <- mlist[[5]]
+allcols <- unlist(mlist)
+
+rm(mlist)
+
+idcols <- setdiff(colnames(strainsMetabs), allcols)
+idcols <- c('Strain','Infected_yn')
+########################################
+
+#keep all mouse strains except WSB (because this is where you get diversity information), day, and metabolite columns
+strainsMetabs <- strainsMetabs %>%
+  filter(Strain != 'WSB') %>%
+  select(idcols, 'SacDay', metabcols)
+
+#remove the 2 weird B6 samples from d9
+strainsMetabs <- strainsMetabs[!(strainsMetabs$SacDay == 9 & strainsMetabs$Strain == 'BL6' & strainsMetabs$Infected_yn == FALSE),]
+#get rid of NA rows
+strainsMetabs <- strainsMetabs[!(is.na(strainsMetabs$arginine) == TRUE),]
+
+strainsMetabs$SacDay[strainsMetabs$Infected_yn == FALSE] <- 0
+
+#select rows to plot individual mice (n=5 for days 8 and 9), and uninfected controls; just like the Thai dataset
+strainsMetabs2 <- strainsMetabs[strainsMetabs$SacDay %in% c(0, 8:9),]
+#randomly select 4 uninfected mice, like the human dataset
+rownames(strainsMetabs2) <- paste0(strainsMetabs2$Strain, "_", strainsMetabs2$SacDay, "_", 1:length(rownames(strainsMetabs2)))
+inf.rows <- rownames(strainsMetabs2)[strainsMetabs2$Infected_yn == T]
+uninf.rows <- rownames(strainsMetabs2)[strainsMetabs2$Infected_yn == F]
+set.seed(2)
+set.seed(1)
+uninf.rows.keep <- sample(uninf.rows, 4)
+strainsMetabs2 <- strainsMetabs2[c(inf.rows, uninf.rows.keep),] #select samples
+strainsMetabs2 <- strainsMetabs2[setdiff(notzeroesDavis, metabs_rm1)] #select metabolites
+
+#get median for each day/infected_yn status
+strainsMetabsMedian <- strainsMetabs %>%
+  group_by(Strain, Infected_yn, SacDay) %>%
+  mutate_all(median, na.rm=TRUE) %>%
+  unique()
+
+#turn rownames into strain/day/infected
+rownames(strainsMetabsMedian) <- paste0('d', strainsMetabsMedian$SacDay, strainsMetabsMedian$Strain)
+rownames <- rownames(strainsMetabsMedian)
+strainsMetabsMedian <- data.frame(strainsMetabsMedian)
+
+#keep just days 0, 8, and 9
+strainsMetabsMedian <- strainsMetabsMedian[strainsMetabsMedian$SacDay %in% c(0,9),]
+
+#subset to metabolites with no zeroes, remove all non-metabolite columns
+strainsMetabsMedian <- strainsMetabsMedian[setdiff(notzeroesDavis, metabs_rm1)]
+```
+
+#load Thai data
+```{r}
+Thai.samplesmetabs <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/MaHPIC falc and vivax metabolomics/targeted results/targeted_Nedits.xlsx'))
+
+Thai.meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/MaHPIC falc and vivax metabolomics/targeted results/targeted_sample metadata.xlsx'))
+
+Thai <- merge(Thai.meta, Thai.samplesmetabs, by.x = 'Sample.ID', by.y = 'Sample.ID', all.x=T, all.y=F)
+```
+
+#plot Thai data alone
+```{r}
+rownames(Thai) <- paste0(Thai$Sample.ID, Thai$Treatment)
+Thai <- Thai[Thai$Treatment != 'Non-Malaria Febrile',]
+Thai$Sample.ID <- NULL
+Thai$Sample.name <- NULL
+Thai$Treatment <- NULL
+
+colsums <- colSums(Thai)
+zeroes <- names(colsums[colsums==0])
+notzeroes <- setdiff(notzeroesDavis, metabs_rm1)
+Thai2 <- Thai[notzeroes]
+scaledThai <- t(scale(Thai2, center = TRUE)) #center = rep(0,ncol(Thai2))
+
+Heatmap(scaledThai, cluster_columns =T, col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")))
+```
+
+#change the Thai data to fold-change, like my data
+```{r}
+#include only uninfected & malaria-infected
+sampleList <- colnames((scaledThai))
+malariaSamples <- sampleList[str_detect(string = sampleList, pattern = 'falciparum')]
+controlSamples <- sampleList[str_detect(string = sampleList, pattern = 'Healthy')]
+malariaAndControls <- c(controlSamples, malariaSamples)
+
+ThaiDavis <- Thai2
+
+ThaiDavis$Treatment <- 'HealthyControl'
+ThaiDavis$Treatment[rownames(ThaiDavis) %in% malariaSamples] <- paste0('P.falciparum',1:length(malariaSamples))
+
+ThaiDavisMedian <- ThaiDavis %>%
+  group_by(Treatment) %>%
+  mutate_all(median, na.rm=T) %>%
+  unique()
+
+rownames(ThaiDavisMedian) <- ThaiDavisMedian$Treatment
+ThaiDavisMedian <- data.frame(ThaiDavisMedian)
+ThaiDavisMedian$Treatment <- NULL
+uninfected <- as.numeric(ThaiDavisMedian['HealthyControl',])
+
+#check for zeroes in the healthy controls; if they're there, impute with the minimum value that isn't zero. otherwise, you can't perform fold-change calculation
+vals <- ThaiDavisMedian['HealthyControl',]
+i <- colSums(vals)
+names(i)[i == 0]
+#just putrescine
+min <- min(ThaiDavisMedian$putrescine[ThaiDavisMedian$putrescine > 0], na.rm=T)
+ThaiDavis$putrescine[ThaiDavis$putrescine == 0] <- min
+ThaiDavisMedian['HealthyControl','putrescine'] <- min
+uninfected <- as.numeric(ThaiDavisMedian['HealthyControl',])
+uninfected
+
+#get foldchange relative to uninfected people
+ThaiDavis$Treatment <- NULL
+Thai.fc <- sweep(ThaiDavis, 2, uninfected, '/')
+Thai.fc[Thai.fc == 0] <- NA
+Thai.fc.log2 <- t(log2(Thai.fc)) #log2 just ignores NAs
+```
+
+#plot Thai fold-change
+```{r}
+Heatmap(Thai.fc.log2[,1:10], cluster_rows = T, cluster_columns = T, show_row_names = F, show_heatmap_legend = F,
+        col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))) +
+  Heatmap(Thai.fc.log2[,11:14], cluster_rows = T, cluster_columns = T,
+        col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")))
+```
+
+#combine datasets and plots. NEED TO HAVE SAME ROWS
+```{r}
+strainsMetabs2 <- data.frame(t(strainsMetabs2))
+strainsMetabsMedian <- data.frame(t(strainsMetabsMedian))
+
+together.ind <- cbind(Thai.fc.log2, strainsMetabs2)
+together.ind <- together.ind[rownames(together.ind) != 'methionine.sulfoxide',]
+together.med <- cbind(Thai.fc.log2, strainsMetabsMedian)
+together.med <- together.med[rownames(together.med) != 'methionine.sulfoxide',]
+
+#for individual mice
+Heatmap(together.ind, cluster_rows = T, cluster_columns = T,
+        col = colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))) #+
+  # Heatmap(together.ind[,c(11:14,25:28)], cluster_rows = T, cluster_columns = T, col = colorRamp2(c(-2.5, 0, 2.5), c("blue", "white", "red")))
+
+#for medians
+Heatmap(together.med, cluster_rows = T, cluster_columns = T, split=3,
+        col = colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))) #+
+  # Heatmap(together.med[,c(11:15)], cluster_rows = T, cluster_columns = T, col = colorRamp2(c(-2.5, 0, 2.5), c("blue", "white", "red")))
+```
+
+#now load & plot the Gupta cerebral pedriatric data
+```{r}
+Gupta.samplesmetabs <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/Gupta/GuptaData.xlsx'))
+
+Gupta.meta <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/Gupta/GuptaData.xlsx', sheet=2))
+
+Gupta.metabs <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/Gupta/GuptaData.xlsx', sheet=3))
+rownames(Gupta.metabs) <- Gupta.metabs$BIOCHEMICAL
+Gupta.metabs <- data.frame(t(data.frame(t(Gupta.metabs)))) #get the weird format
+Gupta.metabs$BIOCHEMICAL.weirdformatG <- rownames(Gupta.metabs)
+
+Gupta <- merge(Gupta.meta, Gupta.samplesmetabs, by.x = 'Sample.ID', by.y = 'Sample.ID', all.x=T, all.y=F)
+
+toss <- c('SAMPLE_ID', 'CLIENT_IDENTIFIER', 'BMP_ID', 'CONVALESCENCE', 'EDEMA_SCORE','GROUP_DESC','GROUP_NUMBER','ORIG_GROUP','RUN_DAY','YEAR')
+Gupta2 <- Gupta[setdiff(colnames(Gupta),toss)]
+Gupta3 <- melt(Gupta2, id.vars = c('Sample.ID', 'PATIENT_ID', 'VISIT'))
+
+#normalize to convalescent data
+Gupta3 <- Gupta3 %>%
+  group_by(PATIENT_ID, variable) %>%
+  mutate(value2 = value[VISIT=='Init'] / value[VISIT=='FU']) #this yields fold-change of infected / convalescent
+
+Gupta3$value <- NULL
+
+Gupta4 <- dcast(Gupta3, Sample.ID + PATIENT_ID + VISIT ~ variable, value.var = 'value2')
+Gupta5 <- Gupta4[Gupta4$VISIT == 'Init',]; Gupta5$VISIT <- NULL
+
+GuptaPlot <- Gupta5
+rownames(GuptaPlot) <- GuptaPlot$PATIENT_ID; GuptaPlot$PATIENT_ID <- NULL
+GuptaPlot$Sample.ID <- NULL
+
+#log-2 fold change
+GuptaPlot <- log2(GuptaPlot)
+
+Heatmap(t(GuptaPlot), cluster_columns=T, cluster_rows=T, col = colorRamp2(c(-5,0,5), c("blue", "white", "red")), show_heatmap_legend = F)
+#looks ok. I double checked and serotonin, spermidine, putrescine, and taurine are missing from Gupta.
+```
+
+#match metabolite names
+```{r}
+#first get new metabolite names, to match other datasets
+Gupta.metabs2 <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/Metabolomics/Gupta/Gupta et al. 2017 - suppl table 1 - list of metabs.xlsx', sheet = 'sorted'))
+namematch <- Gupta.metabs2[1:2]
+namematch2 <- Gupta.metabs[c('BIOCHEMICAL','BIOCHEMICAL.weirdformatG')]
+namematch <- merge(namematch, namematch2, by.x = 'BIOCHEMICAL..Gupta.', by.y = 'BIOCHEMICAL')
+namematch <- namematch[is.na(namematch$BIOCHEMICAL..Davis.) == F,]
+#of mannitol/sorbitol, keep sorbitol; of the 2-hydroxybutyrates, keep X2.hydroxybutyrate..AHB. b/c of more sensitive quantitation
+namematch <- namematch[!(namematch$BIOCHEMICAL.weirdformatG %in% c('mannitol','X2.hydroxyisobutyrate')),]
+rownames(namematch) <- namematch$BIOCHEMICAL..Davis.
+namematch <- data.frame(t(data.frame(t(namematch))))
+namematch$BIOCHEMICAL.weirdformat <- rownames(namematch) #ugh done.
+
+Gupta2tmp <- melt(Gupta2, id.vars = c('Sample.ID', 'PATIENT_ID', 'VISIT'))
+Gupta2tmp <- merge(Gupta2tmp, namematch, by.x = 'variable', by.y = 'BIOCHEMICAL.weirdformatG', all.x = TRUE, all.y = FALSE)
+Gupta2tmp <- Gupta2tmp[is.na(Gupta2tmp$BIOCHEMICAL..Davis.) == F,] #only keep metabolites found in Nicole's data.
+Gupta2tmp$variable <- NULL ; Gupta2tmp$BIOCHEMICAL..Davis. <- NULL ; Gupta2tmp$BIOCHEMICAL..Gupta. <- NULL
+Gupta2tmp2 <- dcast(Gupta2tmp, Sample.ID + PATIENT_ID + VISIT ~ BIOCHEMICAL.weirdformat, value.var = 'value') #check for different numbers of metabolites if it defaults to length for aggregation
+#if that works, reset Gupta2tmp2 to Gupta2
+Gupta2 <- Gupta2tmp2
+
+Gupta3tmp <- merge(Gupta3, namematch, by.x = 'variable', by.y = 'BIOCHEMICAL.weirdformatG', all.x = TRUE, all.y = FALSE)
+Gupta3tmp <- Gupta3tmp[is.na(Gupta3tmp$BIOCHEMICAL..Davis.) == F,] #only keep metabolites found in Nicole's data.
+Gupta3tmp$variable <- NULL ; Gupta3tmp$BIOCHEMICAL..Davis. <- NULL ; Gupta3tmp$BIOCHEMICAL..Gupta. <- NULL
+Gupta4tmp <- dcast(Gupta3tmp, Sample.ID + PATIENT_ID + VISIT ~ BIOCHEMICAL.weirdformat, value.var = 'value2') #check for different numbers of metabolites if it defaults to length for aggregation
+Gupta5tmp <- Gupta4tmp[Gupta4tmp$VISIT == 'Init',]; Gupta5tmp$VISIT <- NULL
+
+GuptaPlot <- data.frame(Gupta5tmp)
+rownames(GuptaPlot) <- GuptaPlot$PATIENT_ID; GuptaPlot$PATIENT_ID <- NULL
+GuptaPlot$Sample.ID <- NULL
+GuptaPlot <- log2(GuptaPlot)
+
+#####
+orig_metabs <- setdiff(notzeroesDavis, metabs_rm1)
+notinGupta <- orig_metabs[!(orig_metabs %in% colnames(GuptaPlot))]
+
+GuptaPlot.together <- GuptaPlot[setdiff(orig_metabs, notinGupta)]
+GuptaPlot.together <- data.frame(t(GuptaPlot.together))
+together.ind2 <- together.ind[setdiff(orig_metabs, notinGupta),]
+
+#check rownames
+rownames(GuptaPlot.together) == rownames(together.ind2) #good to go, all are TRUE
+
+#these are the individual plots
+together.ind3 <- cbind(together.ind2, GuptaPlot.together)
+together.ind4 <- together.ind3[lipids,]
+together.ind5 <- together.ind3[AAs,]
+
+#these are the plots with median values for each mouse strain
+together.med2 <- together.med[setdiff(orig_metabs, notinGupta),]
+together.med3 <-  cbind(together.med2, GuptaPlot.together)
+together.med3 <- together.med3[order(colnames(together.med3))]
+```
+
+#plot 3 datasets together
+```{r}
+#for individual mice , #inf [,c(1:10,15:24,29:37,39)] #uninf [,c(11:14,25:28)]
+Heatmap(together.ind3, cluster_rows = T, cluster_columns = T, split = 5,
+        col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))) #+
+  # Heatmap(together.ind3, cluster_rows = T, cluster_columns = T, col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")))
+
+#for median-ed mice
+Heatmap(together.med3[,c(1:10,22:38)], cluster_rows = T, cluster_columns = T, row_split = 5, column_split=5, column_dend_height = unit(30, "mm"),
+        col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))) #+
+  # Heatmap(together.ind3, cluster_rows = T, cluster_columns = T, col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")))
+```
+
+#now you want to subset metabolites to only the ones that move by 2+ Z-scores in at least one sample
+```{r}
+find_extreme <- function(x){x[which(max(abs(x), na.rm=TRUE) == abs(x))][1]}
+
+#strains Z-scores
+#get from 'strains_metabs_data' file, which transformed metabolite data so that they are z-scored to uninfected B6 values
+strainsZ <- data.frame(read.xlsx('/Users/nicole/Desktop/Science/Schneider Lab/Malaria/_MouseStrains_x_Metabolites/strains_metabs_data.xlsx'))
+strainsZ$SacDay[strainsZ$Infected_yn == FALSE] <- 0
+
+#just grouping cols & metabolites
+strainsZ <- strainsZ[c(3,8,10,110:ncol(strainsZ))]
+
+strainsZmed <- strainsZ %>%
+  #filter(SacDay %in% c(0, 8, 9)) %>%
+  group_by(Strain, SacDay, Infected_yn) %>%
+  mutate_all(median, na.rm=T)#oh nice it auto-ignores the non-numerics
+
+maxSD.strains <- data.frame(maxSD.strains = apply(strainsZmed[4:ncol(strainsZmed)], 2, find_extreme)) #find max change for each metabolite
+medianSD.strains <- data.frame(medianSD.strains = apply(strainsZmed[strainsZmed$Infected_yn == TRUE, 4:ncol(strainsZmed)], 2, median, na.rm=T))
+SD.strains <- cbind(maxSD.strains, medianSD.strains)
+
+#Gupta Z-scores
+####get uninfected means and SDs####
+means <- Gupta2 %>%
+  filter(VISIT == 'FU') %>%
+  select(setdiff(colnames(Gupta2), c('Sample.ID','PATIENT_ID','VISIT'))) %>%
+  apply(2, mean, na.rm=TRUE)
+
+stdvs <- Gupta2 %>%
+  filter(VISIT == 'FU') %>%
+  select(setdiff(colnames(Gupta2), c('Sample.ID','PATIENT_ID','VISIT'))) %>%
+  apply(2, sd, na.rm=TRUE)
+
+means <- as.numeric(means)
+stdvs <- as.numeric(stdvs)
+####################################
+
+####normalize and make dataframe####
+z <- data.frame(scale(Gupta2[4:ncol(Gupta2)], 
+                      center = means, 
+                      scale = stdvs))
+
+GuptaZ <- cbind(Gupta2[1:3], z)
+
+maxSD.Gupta <- data.frame(maxSD.Gupta = apply(GuptaZ[4:ncol(GuptaZ)], 2, find_extreme))
+medianSD.Gupta <- data.frame(medianSD.Gupta = apply(GuptaZ[c(1:10,22),4:ncol(GuptaZ)], 2, median, na.rm=T))
+SD.Gupta <- cbind(maxSD.Gupta, medianSD.Gupta)
+########################################################################
+
+
+##########Thai Z-scores#################################################
+
+####uninfected means and SDs####
+means <- ThaiDavis[11:14,1:60] %>%
+  apply(2, mean, na.rm=TRUE)
+
+stdvs <- ThaiDavis[11:14,1:60] %>%
+  apply(2, sd, na.rm=TRUE)
+
+means <- as.numeric(means)
+stdvs <- as.numeric(stdvs)
+
+###normalize, make dataframe####
+z <- data.frame(scale(ThaiDavis[-61], 
+                      center = means, 
+                      scale = stdvs))
+ThaiDavisZ <- z
+
+maxSD.Thai <- data.frame(maxSD.Thai = apply(ThaiDavisZ, 2, find_extreme))
+medianSD.Thai <- data.frame(medianSD.Thai = apply(ThaiDavisZ[1:10,], 2, median, na.rm=T)) #just inf. samples
+SD.Thai <- cbind(maxSD.Thai, medianSD.Thai)
+########################################################################
+
+#get the max Z-score change for each metabolite in each dataset
+#merge that with metabolite data
+
+metab_info2 <- merge(metab_info, SD.strains, by.x = 'BIOCHEMICAL.weirdformat', by.y = 'row.names', all.y = F)
+metab_info2 <- merge(metab_info2, SD.Gupta, by.x = 'BIOCHEMICAL.weirdformat', by.y = 'row.names', all.y = F)
+metab_info2 <- merge(metab_info2, SD.Thai, by.x = 'BIOCHEMICAL.weirdformat', by.y = 'row.names', all.y = F)
+#should be 42 by the end
+
+metab_info3 <- metab_info2[abs(metab_info2$maxSD.strains) >= 3 | abs(metab_info2$maxSD.Gupta) >= 3 | abs(metab_info2$maxSD.Thai) >= 3,]
+metab_info4 <- metab_info2[abs(metab_info2$medianSD.strains) >= 1.5 | abs(metab_info2$medianSD.Gupta) >= 1.5 | abs(metab_info2$medianSD.Thai) >= 1.5,]
+
+#all metabolites have a deviation of >=2 standard deviations, so I will keep all of them.
+```
+
+#use Z-scores for plotting, they may be less sensitive to differences in mass spec instrument than fold-change.
+```{r}
+GuptaZ <- GuptaZ[GuptaZ$VISIT == 'Init',] #acute infection samples
+GuptaZ.small <- GuptaZ[colnames(GuptaZ) %in% c('PATIENT_ID', setdiff(orig_metabs, notinGupta))]
+rownames(GuptaZ.small) <- GuptaZ.small$PATIENT_ID
+GuptaZ.small$PATIENT_ID <- NULL
+
+GuptaZ.small$Strain <- 'Malawi'
+GuptaZ.small$SacDay <- 100 #this is just a dummy number so I can subset later
+
+strainsZ.small <- data.frame(unique(strainsZmed[c('Strain', 'SacDay', setdiff(orig_metabs, notinGupta))]))
+#strainsZ.small <- strainsZ.small[strainsZ.small$SacDay %in% c(0:12) & strainsZ.small$Strain != 'WSB/EiJ',] #without WSB
+strainsZ.small <- strainsZ.small[strainsZ.small$SacDay %in% c(0:12) | strainsZ.small$Strain == 'WSB/EiJ',] #with WSB
+strainsZ.small <- strainsZ.small[strainsZ.small$SacDay %in% c(0:12) | strainsZ.small$Strain == 'WSB/EiJ',] #with WSB
+rownames(strainsZ.small) <- paste0(strainsZ.small$Strain, "_", 'd', strainsZ.small$SacDay) 
+strainsZ.small <- strainsZ.small[colnames(GuptaZ.small)]
+ThaiDavisZ$ID <- rownames(ThaiDavisZ)
+ThaiDavisZ$Strain <- 'Thai'
+ThaiDavisZ$SacDay <- 200 #this is just a dummy number so I can subset later
+ThaiZ.small <- ThaiDavisZ[c('ID', colnames(GuptaZ.small))] ; ThaiZ.small$ID <- NULL
+
+all <- rbind(strainsZ.small, GuptaZ.small) %>% rbind(ThaiZ.small)
+all <- all[order(rownames(all)),]
+
+all.df <- data.frame(all)
+all.df$ID <- rownames(all.df)
+all.df$dataset <- 'mu'
+all.df$dataset[all.df$Strain == 'Thai'] <- 'T'
+all.df$dataset[all.df$Strain == 'Malawi'] <- 'M'
+all.df$Strain <- factor(all.df$Strain, levels = c('Malawi','Thai',resilience_levels))
+
+peakpath1 <- all.df[all.df$Strain != 'WSB/EiJ' & all.df$SacDay %in% c(100,200, 8:10),] #get peak pathology for strains other than WSB
+peakpath2 <- all.df[all.df$Strain == 'WSB/EiJ' & all.df$SacDay %in% c(15:16),] #peak pathology for WSB, they are late
+peakpath <- rbind(peakpath1, peakpath2)
+
+rownames(peakpath)[peakpath$alanine >20] #this person is an outlier in many values, going to remove
+peakpath <- peakpath[rownames(peakpath) != '3209',]
+
+gg <- ggplot(peakpath, aes(x=dataset, y=ornithine, fill=Strain))
+gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill='Population', x=NULL) + #y='1-linoleoyl-GPC'
+  theme(legend.position = 'none')
+
+peakpath.melt <- melt(peakpath[rownames(peakpath) != '3209',], id.vars = c('Strain','SacDay','dataset','ID'))
+
+df <- data.frame(name1 = unique(peakpath.melt$variable), 
+                 name2 = c('acetylcarnitine', 'alanine', 'arginine',
+                           'asparagine', 'aspartate', 'butyrylcarnitine', 
+                           'carnitine', 'citrulline', 'creatinine', 
+                           'SDMA/ADMA', 'glutamate', 'glutamine',
+                           'glutarylcarnitine', 'glycine', 'hexanoylcarnitine',
+                           'histidine', 'isoleucine', 'kynurenine',
+                           'laurylcarnitine', 'leucine', 'lysine',
+                           'methionine', 'octanoylcarnitine', 'oleoylcarnitine',
+                           'ornithine', 'SM (d18:1/16:0)', 'palmitoylcarnitine',
+                           'phenylalanine', 'proline', 'propionylcarnitine',
+                           'serine', 'SM (d:18:1/18:0)', 'threonine',
+                           'tryptophan', 'tyrosine', 'valine',
+                           '1-(20:4n6) GPC', '1-(18:2) GPC', '1-(18:1) GPC', 
+                           '1-(16:0) GPC', '1-(18:0) GPC', '2-aminoadipate'))
+
+peakpath.melt.plot <- merge(peakpath.melt, df, by.x = 'variable', by.y = 'name1')
+
+gg <- ggplot(peakpath.melt.plot, aes(x=dataset, y=value, fill=Strain))
+indiv <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  facet_wrap(~name2, scales='free') +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill='Population')
+indiv
+#save as 11 x 8.5
+```
+
+#indiv. metabolites for figure
+```{r}
+gg <- ggplot(peakpath, aes(x=dataset, y=kynurenine, fill=Strain))
+kyn <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='Kynurenine') +
+  theme(legend.position = 'none')
+
+kyn
+
+gg <- ggplot(peakpath, aes(x=dataset, y=phenylalanine, fill=Strain))
+phen <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='Phenylalanine') +
+  theme(legend.position = 'none')
+
+phen
+
+gg <- ggplot(peakpath, aes(x=dataset, y=X1.linoleoyl.GPC..18.2., fill=Strain))
+linGPC <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='1-linoleoyl-GPC') +
+  theme(legend.position = 'none')
+
+linGPC
+
+gg <- ggplot(peakpath, aes(x=dataset, y=arginine, fill=Strain))
+arg <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='Arginine') +
+  theme(legend.position = 'none')
+
+arg
+
+gg <- ggplot(peakpath, aes(x=dataset, y=ornithine, fill=Strain))
+orn <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='Ornithine') +
+  theme(legend.position = 'none')
+
+orn
+
+gg <- ggplot(peakpath, aes(x=dataset, y=valine, fill=Strain))
+val <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, y='Valine') +
+  theme(legend.position = 'none')
+
+val
+
+
+indiv <- plot_grid(kyn, phen, linGPC, arg, orn, val, nrow = 3)
+#ggsave('prettyplots_2_indiv.pdf', indiv, height = 4, width = 3, units = 'in')
+```
+
+#plot legend
+```{r}
+gg <- ggplot(peakpath, aes(x=dataset, y=ornithine, fill=Strain))
+for_leg <- gg + 
+  geom_hline(yintercept = 0, linetype='dashed') +
+  geom_jitter(width=0.3, size=2, color='black', shape = 21, stroke=0.2) +
+  #scale_y_continuous(limits = c(NA, 10)) +
+  scale_fill_manual(values = redbluePalette.long.human) +
+  labs(fill=NULL, x=NULL) #y='1-linoleoyl-GPC'
+
+for_leg
+#save as 10x15
+
+legend <- get_legend(for_leg)
+
+#ggsave('prettyplots_2_legend.pdf', legend, width=1, height=2, units='in')
+```
+
+#network with all.df
+```{r}
+#keep all infected human samples
+#keep mouse samples from acute infection, ie days 8:11 for all but WSB, and days 14:17 for WSB
+all.df.net <- all.df[all.df$SacDay %in% c(100, 200, 8:11) | all.df$Strain == 'WSB/EiJ',]
+all.df.net <- all.df.net[str_detect(rownames(all.df.net), 'Healthy') == F,]
+all.df.net <- all.df.net[!(all.df.net$Strain == 'WSB/EiJ' & all.df.net$SacDay %in% c(0:13)),]
+all.small <- all.df.net[1:42]
+
+#make sure samples are columns
+all.small <- t(all.small)
+all.corr <- cor(all.small, method = 'pearson', use = 'pairwise.complete.obs') #the values that get returned are R (as in square root of R-squared). it's hard to find documentation on that, but if you compare this
+#> df <- data.frame(x=c(-1,0,3), y=c(4,5,6))
+#> tmp <- lm(x~y, df)
+#> summary(tmp)
+#to this...
+#> cor(c(-1,0,3), c(4,5,6))
+#r-squareds are the same
+
+all.corr[all.corr<0.4] <- 0
+
+#remove labels and color points instead
+#create network from dataframes to get strain and other info in there
+#for 'd', melt your correlation matrix, name value.var 'weight'
+all.corr.melt <- melt(all.corr, value.var = 'weight')
+sd2 <- all.df[all.df$ID %in% all.corr.melt$Var1,]
+sd2$SacDay[sd2$dataset %in% c('Thai','Malawi')] <- NA
+
+sd3 <- sd2$ID
+
+net <- graph_from_data_frame(d=all.corr.melt, vertices = sd3, directed=F) #including the list of vertices will ensure the vertices are listed in the network in the same order as in your dataframe. this is helpful when you asign network attributes b/c you can use a line like "V(net)$color <- colrs9[sd2$Strain]"
+E(net)$weight <- all.corr.melt$value
+E(net)$width <- E(net)$weight * 20
+
+#V(net)$size <- 1
+#plot(net)
+
+net <- simplify(net, remove.multiple = T, remove.loops = T)
+
+redbluePalette <- c('red4','red3','red1','pink','steelblue1','royalblue2','mediumblue','navy') 
+colrs9 <- c('yellow', 'orange', redbluePalette)
+
+#resilience_levels <- c('PWK/PhJ','A/J','NOD/ShiLtJ','CAST/EiJ','C57BL/6','129S1/SvImJ','NZO/HILtJ','WSB/EiJ') 
+
+#V(net)$color <- colrs[sd2$Study] #needs to be a factor
+V(net)$color <- colrs9[sd2$Strain] #needs to be a factor
+V(net)$Strain <- sd2$Strain
+V(net)$Study <- sd2$dataset
+V(net)$label <- sd2$SacDay
+V(net)$size <- 8
+V(net)$label.color <- 'white'
+plot(net)
+
+#delete edges below certain similarity cutoff, e.g. R-squared of 0.5 (values in network are R, so take sqrt of 0.5)
+cut.off <- sqrt(0.5)
+
+net.sub <- delete_edges(net, E(net)[weight<cut.off])
+plot(net.sub)
+
+a <- layout.auto(net)
+mds <- layout_with_mds(net) #uses point-point distance to plot points
+a.sub <- layout.auto(net.sub)
+mds.sub <- layout_with_mds(net.sub) #uses point-point distance to plot points
+
+#distance-based layout
+plot(net, layout=mds)
+plot(net.sub, layout=mds.sub)
+#auto layout
+plot(net, layout=a)
+plot(net.sub, layout=a.sub)
+
+#save as 10x10
+```
+
